@@ -159,6 +159,14 @@ def st_validate(ctx: Ctx):
     items = d.get("line_items") or []
     if items and all(i.get("amount") is not None for i in items):
         line_sum = round(sum(i["amount"] for i in items), 2)
+        # Don't trust the reader's "prices include tax?" answer blindly: let the arithmetic decide.
+        near = lambda a, b: a is not None and b is not None and abs(a - b) <= C.ARITHMETIC_TOLERANCE_INR
+        if d.get("tax_inclusive") and near(line_sum, sub) and not near(line_sum, total):
+            d["tax_inclusive"] = False
+            details.append(("Tax treatment", "Corrected to tax-exclusive: line items match the pre-tax subtotal"))
+        elif not d.get("tax_inclusive") and near(line_sum, total) and not near(line_sum, sub) and tax:
+            d["tax_inclusive"] = True
+            details.append(("Tax treatment", "Corrected to tax-inclusive: line items match the grand total"))
         target = total if d.get("tax_inclusive") else sub
         if target is not None:
             diff = abs(line_sum - target)
