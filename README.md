@@ -39,6 +39,8 @@ The **PO ledger** is derived from approved invoices. That's what makes split-inv
 
 ## Test scenarios
 
+**Run all 9 at once** with the batch button; the Dashboard's *Business impact* panel then shows the money stopped and the analyst time saved.
+
 Each vendor uses a different layout, label vocabulary ("Invoice No" / "Bill No." / "Invoice #" / "Inv No") and tax presentation (CGST+SGST, a single GST line, IGST-inclusive).
 
 | # | Scenario | What it tests | Expected |
@@ -50,6 +52,7 @@ Each vendor uses a different layout, label vocabulary ("Invoice No" / "Bill No."
 | 05 | Scanned, no PO number | Image-only PDF with no text layer. PO inferred from the vendor's open POs by line similarity and amount fit (94%) | 🟠 Review, with suggested PO |
 | 06 | Duplicate resubmission | Same invoice marked "COPY", number written `INV 1043` instead of `INV-1043` | ⛔ Reject (duplicate) |
 | 07 | Unknown vendor | Not in the vendor master, no invoice date, non-existent PO | ⛔ Reject + vendor email |
+| 09 | Bank details changed (fraud) | Perfect invoice that matches its PO, but the bank account differs from the vendor master. This is the classic "we've changed our bank" payment-diversion scam | ⛔ Reject, verify by phone |
 | 08 | Bundled lines, close but not exact | One consolidated line covering a 3-line PO, 1.4% over because of delivery charges. Matched on combined value; within the 2% tolerance | ✅ Approve (noted) |
 
 **Order matters:** run 01 before 06, and 02 before 03. Use **Reset demo data** in the sidebar to start clean.

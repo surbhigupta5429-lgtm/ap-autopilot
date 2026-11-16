@@ -25,7 +25,7 @@ import db
 import refdata  # noqa: E402
 from extract import PROVIDER_LABEL, available_providers  # noqa: E402
 from fmt import inr  # noqa: E402
-from pipeline import STAGES, rank, run_pipeline  # noqa: E402
+from pipeline import STAGES, rank, run_pipeline, run_sync  # noqa: E402
 import ui  # noqa: E402
 
 st.set_page_config(page_title="AP Autopilot · Invoice to Decision", page_icon="🧾", layout="wide")
@@ -44,11 +44,18 @@ SCENARIOS = {
                                            "Same invoice sent again as a 'copy', number written as 'INV 1043'. Run the happy path first."),
     "08_acme_bundled_lines_within_tolerance.pdf": ("Bundled lines, close but not exact",
                                                    "One consolidated line covering a 3-line PO, 1.4% over (delivery) — within tolerance."),
+    "09_acme_bank_details_changed.pdf": ("Bank details changed (fraud)",
+                                         "Everything matches the PO, but the bank account differs from the vendor master: "
+                                         "classic payment-diversion fraud."),
     "07_quickfix_unknown_vendor_missing_date.pdf": ("Unknown vendor",
                                                     "Supplier not in the vendor master, no invoice date, PO that doesn't exist."),
 }
 
-TILE_NAMES = {"04": "Price increase", "05": "Scanned, no PO", "06": "Duplicate", "08": "Bundled lines"}
+TILE_NAMES = {"04": "Price increase", "05": "Scanned, no PO", "06": "Duplicate", "08": "Bundled lines",
+              "09": "Bank details changed"}
+MANUAL_MINUTES_PER_INVOICE = 8  # typical manual AP check per invoice (open, find PO, compare, decide)
+OVERBILL_CODES = ("OVER_TOLERANCE", "OVER_LIMIT", "PRICE_VARIANCE", "UNORDERED_LINE")
+RISK_CODES = ("BANK_DETAILS_CHANGED", "GSTIN_MISMATCH", "UNKNOWN_VENDOR", "VENDOR_NOT_ACTIVE")
 
 # --------------------------------------------------------------------------- #
 # Sidebar
@@ -172,7 +179,9 @@ def stage_grid():
 
 st.markdown('<div id="page-top"></div>', unsafe_allow_html=True)
 if st.session_state.pop("scroll_top", False):
-    scroll_to("page-top")
+    run_js("setTimeout(function(){var el=window.parent.document.getElementById('page-top');if(!el)return;"
+           "var p=el.parentElement;while(p&&p.scrollHeight<=p.clientHeight){p=p.parentElement;}"
+           "if(p){p.scrollTo({top:0,behavior:'smooth'});}},300);")
 
 
 # --------------------------------------------------------------------------- #
@@ -196,14 +205,46 @@ if page == "Process invoice":
                 run_now = (up.getvalue(), up.name)
         st.markdown('<div class="or-line">or try a test invoice</div>', unsafe_allow_html=True)
     st.markdown(ui.tile_css(len(names)), unsafe_allow_html=True)
-    tile_icons = ["🧾", "📦", "⛽", "📈", "🖨️", "👯", "❓", "🧺"]
-    for row in range(0, len(names), 4):
-        cols = st.columns(4, gap="small")
-        for j, n in enumerate(names[row:row + 4]):
+    tile_icons = {"01": "🧾", "02": "📦", "03": "⛽", "04": "📈", "05": "🖨️", "06": "👯", "07": "❓", "08": "🧺", "09": "🏦"}
+    for row in range(0, len(names), 3):
+        cols = st.columns(3, gap="small")
+        for j, n in enumerate(names[row:row + 3]):
             i = row + j
-            if cols[j].button(f"{tile_icons[i]}  {n[:2]} · {TILE_NAMES.get(n[:2], SCENARIOS[n][0])}", key=f"tile_{i}", width="stretch",
-                              help=SCENARIOS[n][1]):
+            if cols[j].button(f"{tile_icons.get(n[:2], '📄')}  {n[:2]} · {TILE_NAMES.get(n[:2], SCENARIOS[n][0])}",
+                              key=f"tile_{i}", width="stretch", help=SCENARIOS[n][1]):
                 run_now = ((C.SAMPLES_DIR / n).read_bytes(), n)
+
+    _, mid2, _ = st.columns([0.6, 2.2, 0.6])
+    with mid2:
+        st.markdown('<div class="or-line">or process a whole batch</div>', unsafe_allow_html=True)
+        batch_go = st.button(f"Run all {len(names)} test invoices as one batch", key="run_all",
+                             icon=":material/playlist_play:", width="stretch",
+                             help="Clears the demo history, then processes every test invoice in order, "
+                                  "like a month's inbox arriving at once.")
+    if batch_go:
+        db.reset()
+        st.session_state.pop("last_run", None)
+        st.markdown('<div id="batch"></div>' + ui.section("📚", "Batch run", f"{len(names)} invoices, one click"),
+                    unsafe_allow_html=True)
+        scroll_to("batch")
+        prog = st.progress(0.0, text="Starting batch…")
+        table_slot = st.empty()
+        results, t0 = [], time.perf_counter()
+        for i, n in enumerate(names):
+            prog.progress(i / len(names), text=f"Processing {n[:2]} · {TILE_NAMES.get(n[:2], SCENARIOS[n][0])}…")
+            results.append(run_sync((C.SAMPLES_DIR / n).read_bytes(), n, mode))
+            table_slot.markdown(ui.batch_table(results), unsafe_allow_html=True)
+        prog.progress(1.0, text=f"Done: {len(names)} invoices in {time.perf_counter() - t0:.1f} s")
+        st.session_state["batch_done"] = results
+    elif st.session_state.get("batch_done") and not run_now:
+        st.markdown(ui.section("📚", "Batch run", "last batch"), unsafe_allow_html=True)
+        st.markdown(ui.batch_table(st.session_state["batch_done"]), unsafe_allow_html=True)
+    if st.session_state.get("batch_done") and not run_now:
+        if st.button("See the business impact on the Dashboard", key="to_dash", icon=":material/arrow_forward:",
+                     type="primary"):
+            st.session_state.page = "Dashboard"
+            st.session_state.scroll_top = True
+            st.rerun()
 
     st.markdown('<div id="live-run"></div>' + ui.section("⚡", "Live run", "each stage lights up as it executes"),
                 unsafe_allow_html=True)
@@ -212,6 +253,7 @@ if page == "Process invoice":
     idx = {k: i for i, (k, _) in enumerate(STAGES)}
 
     if run_now:
+        st.session_state.pop("batch_done", None)
         file_bytes, file_name = run_now
         scroll_to("live-run")
         states = {}
@@ -268,6 +310,22 @@ elif page == "Dashboard":
     auto = sum(1 for r in runs if r["decision"] == "APPROVE")
     approved_val = sum(r["total"] or 0 for r in runs if r["status"] in ("approved", "approved_by_reviewer"))
     avg_ms = sum(r["duration_ms"] for r in runs) / n
+
+    # ---- Business impact: what a buyer actually cares about ----
+    def has(r, codes):
+        return any(f["code"] in codes or (codes == "DUP" and f["code"].startswith("DUPLICATE")) for f in r["findings"])
+    dup_runs = [r for r in runs if has(r, "DUP")]
+    risk_runs = [r for r in runs if has(r, RISK_CODES) and r not in dup_runs]
+    dup_val = sum(r["total"] or 0 for r in dup_runs)
+    risk_val = sum(r["total"] or 0 for r in risk_runs)
+    over_val = sum(max([f.get("amount") or 0 for f in r["findings"] if f["code"] in OVERBILL_CODES], default=0)
+                   for r in runs if r not in dup_runs)
+    protected = dup_val + risk_val + over_val
+    manual_min = n * MANUAL_MINUTES_PER_INVOICE
+    auto_s = sum(r["duration_ms"] for r in runs) / 1000
+    st.markdown(ui.impact_panel(n, protected, dup_val, len(dup_runs), over_val, risk_val, len(risk_runs),
+                                manual_min, auto_s, MANUAL_MINUTES_PER_INVOICE), unsafe_allow_html=True)
+
     k = st.columns(5)
     k[0].markdown(ui.kpi("Invoices processed", n, f"{len({r['vendor_id'] for r in runs if r['vendor_id']})} vendors", "#6366f1,#8b5cf6"),
                   unsafe_allow_html=True)

@@ -42,7 +42,7 @@ SEVERITY = {"block": ("Blocking", "#b91c1c", "#fee2e2"), "review": ("Review", "#
 
 # Test-invoice tiles: gradient per scenario.
 TILE_STYLE = ["#6366f1,#8b5cf6", "#0ea5e9,#06b6d4", "#14b8a6,#10b981", "#f59e0b,#f97316",
-              "#ec4899,#f43f5e", "#8b5cf6,#d946ef", "#3b82f6,#6366f1", "#64748b,#475569"]
+              "#ec4899,#f43f5e", "#8b5cf6,#d946ef", "#3b82f6,#6366f1", "#64748b,#475569", "#dc2626,#9333ea"]
 
 CSS = """
 <style>
@@ -197,6 +197,32 @@ table.fields td.k { color: #64748b; width: 34%; }
   border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px; color: #1e293b; }
 .page-title { font-size: 2rem; font-weight: 800; color: #1e1b4b; letter-spacing: -0.02em; }
 .page-sub { color: #6b7280; margin: 4px 0 20px 0; font-size: 1rem; }
+/* ---------- Business impact ---------- */
+.impact { border-radius: 22px; padding: 22px 24px; color: #fff; margin: 0 0 22px 0;
+  background: radial-gradient(circle at 0% 0%, #7c3aed 0%, #4f46e5 45%, #1e1b4b 100%);
+  box-shadow: 0 14px 34px rgba(49,46,129,.35); }
+.impact-kicker { font-size: .74rem; font-weight: 800; letter-spacing: .14em; opacity: .85; }
+.impact-big { font-size: 1.75rem; font-weight: 800; margin-top: 6px; letter-spacing: -0.02em; line-height: 1.25; }
+.impact-big b { background: linear-gradient(90deg, #fde68a, #fbcfe8); -webkit-background-clip: text; background-clip: text;
+  color: transparent; }
+.impact-sub { opacity: .88; margin-top: 4px; font-size: .95rem; }
+.impact-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 16px; }
+.itile { background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.18); border-radius: 16px; padding: 14px; }
+.itile .ii { font-size: 1.4rem; }
+.itile .iv { font-size: 1.35rem; font-weight: 800; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.itile .il { font-size: .8rem; font-weight: 700; margin-top: 2px; }
+.itile .is { font-size: .74rem; opacity: .8; margin-top: 2px; }
+.impact-note { font-size: .74rem; opacity: .7; margin-top: 12px; }
+
+/* ---------- Batch results ---------- */
+table.batch { width: 100%; border-collapse: separate; border-spacing: 0 6px; font-size: .88rem; }
+table.batch td { background: #fff; padding: 10px 12px; border-top: 1px solid #eef2ff; border-bottom: 1px solid #eef2ff; }
+table.batch td:first-child { border-left: 5px solid var(--c); border-radius: 12px 0 0 12px; font-weight: 800; color: #6366f1; }
+table.batch td:last-child { border-right: 1px solid #eef2ff; border-radius: 0 12px 12px 0; color: #475569; }
+table.batch .nm { font-weight: 700; color: #0f172a; }
+.st-key-run_all button { height: 54px; border-radius: 14px !important; border: 2px solid #c4b5fd !important;
+  background: linear-gradient(135deg, #f5f3ff, #fdf4ff) !important; }
+.st-key-run_all button p { font-size: 1.02rem !important; font-weight: 700 !important; color: #5b21b6 !important; }
 </style>
 """
 
@@ -307,6 +333,41 @@ def tile_css(n: int) -> str:
     rules = "".join(f'.st-key-tile_{i} button {{ background: linear-gradient(135deg,{TILE_STYLE[i % len(TILE_STYLE)]}) !important; }}'
                     for i in range(n))
     return f"<style>{rules}</style>"
+
+
+def _dur(minutes: float) -> str:
+    h, m = divmod(int(round(minutes)), 60)
+    return f"{h}h {m}m" if h else f"{m} min"
+
+
+def impact_panel(n, protected, dup_val, dup_n, over_val, risk_val, risk_n, manual_min, auto_s, per_inv) -> str:
+    tiles = [("👯", inr(dup_val), "Duplicate payments blocked", f"{dup_n} invoice(s) caught"),
+             ("📈", inr(over_val), "Over-billing flagged", "surcharges & price creep vs PO"),
+             ("🛡️", inr(risk_val), "Risky payments blocked", f"{risk_n} fraud / unapproved-vendor case(s)"),
+             ("⏱️", _dur(manual_min - auto_s / 60), "Analyst time saved",
+              f"{n} × ~{per_inv} min by hand vs {auto_s:.0f} s here")]
+    grid = "".join(f'<div class="itile"><div class="ii">{i}</div><div class="iv">{e(v)}</div><div class="il">{e(l)}</div>'
+                   f'<div class="is">{e(s)}</div></div>' for i, v, l, s in tiles)
+    return (f'<div class="impact"><div class="impact-kicker">BUSINESS IMPACT</div>'
+            f'<div class="impact-big"><b>{inr(protected)}</b> of payments stopped before they went out</div>'
+            f'<div class="impact-sub">across {n} invoices · checked in {auto_s:.0f} s instead of ~{_dur(manual_min)} by hand</div>'
+            f'<div class="impact-grid">{grid}</div>'
+            f'<div class="impact-note">Time saved assumes ~{per_inv} minutes of manual checking per invoice '
+            f'(open, find the PO, compare, decide).</div></div>')
+
+
+def batch_table(runs: list[dict]) -> str:
+    rows = []
+    for r in runs:
+        label, _, icon = DECISION[r["decision"]]
+        c = {"APPROVE": "#16a34a", "REVIEW": "#d97706", "REJECT": "#dc2626"}[r["decision"]]
+        bg = {"APPROVE": "#dcfce7", "REVIEW": "#fef3c7", "REJECT": "#fee2e2"}[r["decision"]]
+        short = {"APPROVE": "Approved", "REVIEW": "Needs review", "REJECT": "Rejected"}[r["decision"]]
+        rows.append(f'<tr style="--c:{c}"><td>{e(r["file_name"][:2])}</td>'
+                    f'<td class="nm">{e(r.get("vendor_name"))}<br><span style="font-weight:500;color:#64748b">'
+                    f'{e(r.get("invoice_number"))}</span></td><td>{inr(r.get("total"), 0)}</td>'
+                    f'<td>{chip(icon + " " + short, c, bg)}</td><td>{e(r["headline"].split(" — ", 1)[-1])}</td></tr>')
+    return f'<table class="batch">{"".join(rows)}</table>'
 
 
 @st.cache_data(show_spinner=False)

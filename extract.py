@@ -24,7 +24,7 @@ import requests
 
 from config import BUYER_GSTIN
 
-FIELDS = ["vendor_name", "vendor_gstin", "invoice_number", "invoice_date", "po_number",
+FIELDS = ["vendor_name", "vendor_gstin", "bank_account", "ifsc", "invoice_number", "invoice_date", "po_number",
           "currency", "subtotal", "tax_amount", "total", "tax_inclusive", "line_items"]
 
 PROMPT = """You are an accounts-payable document reader. Extract data from the attached invoice.
@@ -33,6 +33,8 @@ Return ONLY a JSON object with exactly these keys:
 {
   "vendor_name": string|null,          // the SELLER issuing the invoice (not the buyer "Zenith Retail")
   "vendor_gstin": string|null,         // the SELLER's GSTIN/tax id, not the buyer's
+  "bank_account": string|null,         // the SELLER's bank account number for payment (digits only), if printed
+  "ifsc": string|null,                 // the bank IFSC code, if printed
   "invoice_number": string|null,       // exactly as printed, keep spaces/slashes
   "invoice_date": "YYYY-MM-DD"|null,   // the issue date, NOT the due date. Indian invoices are day-first.
   "po_number": string|null,            // only if explicitly printed; never guess
@@ -270,6 +272,10 @@ def heuristic_parse(text: str) -> dict:
 
     gstins = [g for g in GSTIN_RE.findall(text) if g != BUYER_GSTIN]
     vendor_gstin = gstins[0] if gstins else None
+    m = re.search(r"(?:a/c|account)(?:\s*(?:no\.?|number))?\s*[:#]?\s*(\d[\d ]{7,20}\d)", text, re.I)
+    bank_account = re.sub(r"\D", "", m.group(1)) if m else None
+    m = re.search(r"\b([A-Z]{4}0[A-Z0-9]{6})\b", text)
+    ifsc = m.group(1) if m else None
 
     # Vendor: first line that looks like a business name (skip document titles).
     vendor = None
@@ -329,7 +335,7 @@ def heuristic_parse(text: str) -> dict:
     if re.search(r"revised|tariff|price (increase|revision)", text, re.I):
         notes.append("Vendor mentions a price revision.")
 
-    return {"vendor_name": vendor, "vendor_gstin": vendor_gstin, "invoice_number": inv, "invoice_date": date,
+    return {"vendor_name": vendor, "vendor_gstin": vendor_gstin, "bank_account": bank_account, "ifsc": ifsc, "invoice_number": inv, "invoice_date": date,
             "po_number": po, "currency": "INR", "line_items": items, "subtotal": subtotal,
             "tax_amount": tax if found_tax else None, "total": total, "tax_inclusive": tax_inclusive,
             "confidence": conf, "notes": " ".join(notes)}
@@ -353,9 +359,11 @@ def normalise(d: dict) -> dict:
                       "unit_price": to_num(it.get("unit_price")),
                       "amount": to_num(it.get("amount"))})
     out["line_items"] = items
-    for k in ("vendor_name", "invoice_number", "po_number", "vendor_gstin"):
+    for k in ("vendor_name", "invoice_number", "po_number", "vendor_gstin", "ifsc"):
         if isinstance(out[k], str):
             out[k] = out[k].strip() or None
+    if out.get("bank_account"):
+        out["bank_account"] = re.sub(r"\D", "", str(out["bank_account"])) or None
     return out
 
 

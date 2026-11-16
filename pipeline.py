@@ -43,7 +43,7 @@ STAGES = [
 
 
 # Which reason leads the headline when several apply (most decisive first).
-PRIORITY = ["DUPLICATE_FILE", "DUPLICATE_INVOICE", "GSTIN_MISMATCH", "UNKNOWN_VENDOR", "VENDOR_NOT_ACTIVE",
+PRIORITY = ["DUPLICATE_FILE", "DUPLICATE_INVOICE", "BANK_DETAILS_CHANGED", "GSTIN_MISMATCH", "UNKNOWN_VENDOR", "VENDOR_NOT_ACTIVE",
             "PO_VENDOR_MISMATCH", "PO_NOT_FOUND", "PO_CLOSED", "PO_EXHAUSTED", "NO_OPEN_PO", "OVER_LIMIT",
             "MISSING_INVOICE_NUMBER", "MISSING_INVOICE_DATE", "EXTRACTION_FAILED", "PRICE_VARIANCE",
             "UNORDERED_LINE", "OVER_TOLERANCE", "PO_INFERRED", "PO_AMBIGUOUS", "POSSIBLE_DUPLICATE",
@@ -77,9 +77,9 @@ class Ctx:
         self.pre_tax = self.tax = self.total = None
         self.file_hash = hashlib.sha256(file_bytes).hexdigest()
 
-    def flag(self, stage, severity, code, message, owner=None, action=None):
+    def flag(self, stage, severity, code, message, owner=None, action=None, amount=None):
         f = {"stage": stage, "severity": severity, "code": code, "message": message,
-             "owner": owner, "action": action}
+             "owner": owner, "action": action, "amount": amount}
         self.findings.append(f)
         return f
 
@@ -261,6 +261,23 @@ def st_vendor(ctx: Ctx):
             status = "fail"
     else:
         details.append(("GSTIN check", "Not printed on invoice"))
+
+    # Payment-diversion fraud: the #1 invoice scam is "our bank details have changed".
+    acct = re.sub(r"\D", "", ctx.data.get("bank_account") or "")
+    master_acct = re.sub(r"\D", "", str(best.get("bank_account") or ""))
+    if acct and master_acct:
+        ok = acct == master_acct
+        details.append(("Bank account check", f"…{acct[-4:]} " + ("✓ matches vendor master" if ok
+                                                                   else f"✗ vendor master has …{master_acct[-4:]}")))
+        if not ok:
+            ctx.flag("vendor", "block", "BANK_DETAILS_CHANGED",
+                     f"Bank account on invoice (…{acct[-4:]}) differs from the vendor master (…{master_acct[-4:]}). "
+                     f"This is the classic payment-diversion fraud pattern.", "AP reviewer",
+                     "Do not pay. Call the vendor on the number in the vendor master (not the one on the invoice) "
+                     "to verify, and update bank details only through vendor onboarding.")
+            status = "fail"
+    else:
+        details.append(("Bank account check", "Not printed on invoice"))
     summary = {"pass": f"Approved vendor: {best['vendor_name']}.",
                "warn": f"Probable match: {best['vendor_name']} — needs confirmation.",
                "fail": "Vendor cannot be paid as-is."}[status]
@@ -402,14 +419,14 @@ def st_amounts(ctx: Ctx):
         ctx.flag("amounts", "review", "OVER_TOLERANCE",
                  f"Exceeds remaining PO balance by {inr(over)} ({pct(over_pct)} of PO value; tolerance "
                  f"{C.AUTO_APPROVE_TOLERANCE_PCT}%).", "AP reviewer",
-                 "Get budget owner approval for the excess or short-pay to the PO balance.")
+                 "Get budget owner approval for the excess or short-pay to the PO balance.", amount=over)
         status = "warn"
     else:
         details.append(("Balance check", f"✗ Over by {inr(over)} ({pct(over_pct)} of PO)"))
         ctx.flag("amounts", "block", "OVER_LIMIT",
                  f"Exceeds remaining PO balance by {inr(over)} ({pct(over_pct)}) — beyond the "
                  f"{C.REVIEW_TOLERANCE_PCT}% review limit.", "Vendor",
-                 "Return to vendor; bill only against the remaining PO balance or get a PO amendment.")
+                 "Return to vendor; bill only against the remaining PO balance or get a PO amendment.", amount=over)
         status = "fail"
 
     # Line-level 2-way match
@@ -442,7 +459,7 @@ def st_amounts(ctx: Ctx):
             details.append((f"Line: {it['description']}", f"✗ not on the PO ({inr(it['amount'])})"))
             ctx.flag("amounts", "review", "UNORDERED_LINE",
                      f"'{it['description']}' ({inr(it['amount'])}) is not on {po['po_number']}.", "AP reviewer",
-                     "Confirm this charge was agreed before paying it.")
+                     "Confirm this charge was agreed before paying it.", amount=amt)
             status = "warn" if status == "pass" else status
             continue
         qty = it.get("quantity") or 1
@@ -454,7 +471,8 @@ def st_amounts(ctx: Ctx):
         if not ok and var > 0:
             ctx.flag("amounts", "review", "PRICE_VARIANCE",
                      f"Unit price for '{best['description']}' is {pct(var)} vs PO ({inr(unit)} vs {inr(best['unit_price'])}).",
-                     "AP reviewer", "Check whether a price revision was approved by procurement.")
+                     "AP reviewer", "Check whether a price revision was approved by procurement.",
+                     amount=round((unit - best["unit_price"]) * qty, 2))
             status = "warn" if status == "pass" else status
 
     summary = {"pass": "Amounts agree with the PO.",

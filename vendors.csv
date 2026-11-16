@@ -1,6 +1,6 @@
-vendor_id,vendor_name,aliases,gstin,status,payment_terms_days,contact_email
-V001,Acme Office Supplies Pvt Ltd,Acme Office Supplies|Acme Supplies|ACME Office,27AABCA1234F1Z5,approved,30,billing@acmeoffice.in
-V002,BrightPath Logistics LLP,BrightPath Logistics|Bright Path Logistics|BrightPath,27AAKFB5678K1Z2,approved,45,accounts@brightpath.in
-V003,Northwind Cloud Services Pvt Ltd,Northwind Cloud|Northwind Cloud Services|Northwind,29AACCN9012M1Z8,approved,30,ar@northwindcloud.io
-V004,Greenleaf Facility Management Pvt Ltd,Greenleaf Facility Management|Greenleaf Facilities|Greenleaf FM,27AADCG3456P1Z1,approved,30,finance@greenleaffm.in
-V005,Sterling Print & Packaging,Sterling Print|Sterling Packaging,27AAHFS7890Q1Z4,on_hold,30,accounts@sterlingprint.in
+vendor_id,vendor_name,aliases,gstin,status,payment_terms_days,contact_email,bank_account,ifsc
+V001,Acme Office Supplies Pvt Ltd,Acme Office Supplies|Acme Supplies|ACME Office,27AABCA1234F1Z5,approved,30,billing@acmeoffice.in,50200012345678,HDFC0000123
+V002,BrightPath Logistics LLP,BrightPath Logistics|Bright Path Logistics|BrightPath,27AAKFB5678K1Z2,approved,45,accounts@brightpath.in,912020034567812,UTIB0000245
+V003,Northwind Cloud Services Pvt Ltd,Northwind Cloud|Northwind Cloud Services|Northwind,29AACCN9012M1Z8,approved,30,ar@northwindcloud.io,7711224466,KKBK0000811
+V004,Greenleaf Facility Management Pvt Ltd,Greenleaf Facility Management|Greenleaf Facilities|Greenleaf FM,27AADCG3456P1Z1,approved,30,finance@greenleaffm.in,001505012345,ICIC0000015
+V005,Sterling Print & Packaging,Sterling Print|Sterling Packaging,27AAHFS7890Q1Z4,on_hold,30,accounts@sterlingprint.in,33445566778,SBIN0001234
