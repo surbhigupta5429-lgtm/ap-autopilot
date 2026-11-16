@@ -102,17 +102,21 @@ def _call_claude(b64: str) -> dict:
 
 
 def _call_gemini(b64: str) -> dict:
-    model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-    r = requests.post(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-        headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"], "content-type": "application/json"},
-        json={"contents": [{"parts": [{"inline_data": {"mime_type": "application/pdf", "data": b64}},
-                                      {"text": PROMPT}]}],
-              "generationConfig": {"responseMimeType": "application/json", "temperature": 0}},
-        timeout=90,
-    )
+    model = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    headers = {"x-goog-api-key": os.environ["GEMINI_API_KEY"], "content-type": "application/json"}
+    body = {"contents": [{"parts": [{"inline_data": {"mime_type": "application/pdf", "data": b64}},
+                                    {"text": PROMPT}]}],
+            "generationConfig": {"responseMimeType": "application/json", "temperature": 0,
+                                 # Reading an invoice needs no deep reasoning: keep "thinking" low for speed.
+                                 "thinkingConfig": {"thinkingLevel": os.getenv("GEMINI_THINKING", "low")}}}
+    r = requests.post(url, headers=headers, json=body, timeout=45)
+    if r.status_code == 400 and "think" in r.text.lower():  # model without thinking levels: retry plainly
+        body["generationConfig"].pop("thinkingConfig")
+        r = requests.post(url, headers=headers, json=body, timeout=45)
     r.raise_for_status()
-    return _parse_json(r.json()["candidates"][0]["content"]["parts"][0]["text"])
+    parts = r.json()["candidates"][0]["content"]["parts"]
+    return _parse_json("".join(p.get("text", "") for p in parts if not p.get("thought")))
 
 
 def _call_openai(b64: str) -> dict:
