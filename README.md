@@ -19,7 +19,7 @@ PDF ─► 1 Receive ─► 2 Extract ─► 3 Validate ─► 4 Vendor ─► 5
                     text / OCR)   tax slab, date status      file, amount   open POs       PO balance           REVIEW / REJECT
 ```
 
-**The core design choice: the AI reads, the rules decide.** An AI vision model (Gemini, Claude or OpenAI) turns the PDF into structured fields, each with a confidence score. Every decision after that is deterministic Python against explicit, tunable rules (`engine/config.py`). That means:
+**The core design choice: the AI reads, the rules decide.** An AI vision model (Gemini, Claude or OpenAI) turns the PDF into structured fields, each with a confidence score. Every decision after that is deterministic Python against explicit, tunable rules (`config.py`). Where the AI's reading contradicts the arithmetic (e.g. it says prices include tax but the lines add up to the pre-tax subtotal), the arithmetic wins. That means:
 
 - the same invoice always gets the same answer, so the system is auditable;
 - every outcome traces back to a named rule; nothing is buried in a prompt;
@@ -37,7 +37,7 @@ The decision is the worst severity found. Each finding names an **owner** (AP re
 
 The **PO ledger** is derived from approved invoices. That's what makes split-invoice tracking work: pending or rejected invoices never consume PO balance. When a reviewer approves an invoice, the balance updates immediately.
 
-## Test scenarios (`sample_invoices/`)
+## Test scenarios
 
 Each vendor uses a different layout, label vocabulary ("Invoice No" / "Bill No." / "Invoice #" / "Inv No") and tax presentation (CGST+SGST, a single GST line, IGST-inclusive).
 
@@ -67,31 +67,34 @@ Each vendor uses a different layout, label vocabulary ("Invoice No" / "Bill No."
 ## Run locally
 
 ```bash
-pip install -r requirements.txt          # plus: brew/apt install tesseract poppler
-cp .streamlit/secrets.toml.example .streamlit/secrets.toml   # add one API key (optional)
+pip install -r requirements.txt          # plus Tesseract + Poppler for the OCR fallback
 streamlit run app.py
 ```
-`python scripts/make_invoices.py` regenerates the test invoices.
+Add an API key in `.streamlit/secrets.toml` (see `secrets.toml.example`). Without one, the app runs on the local text-layer / OCR reader.
 
-## Deploy (Streamlit Community Cloud, free)
+## Deploy (Streamlit Community Cloud)
 
-1. Push this folder to a public GitHub repo.
-2. Go to share.streamlit.io → **Create app** → choose the repo, branch `main`, file `app.py`.
-3. **Advanced settings → Secrets:** paste `GEMINI_API_KEY = "..."` (or another provider's key).
-4. Deploy. `packages.txt` installs Tesseract and Poppler automatically.
-
-## Project layout
-
+Repo → share.streamlit.io → **Create app** → main file `app.py` → **Secrets**:
 ```
-app.py                 Streamlit UI: process, dashboard, rules
-ui.py                  styling + stage / decision components
-engine/config.py       every business rule and threshold
-engine/extract.py      AI extraction (3 providers) + text-layer / OCR fallback
-engine/pipeline.py     the 8 stages, findings and decision logic
-engine/db.py           SQLite run history + PO ledger
-engine/refdata.py      vendor master, POs, PO lines (CSV in data/po/)
-scripts/make_invoices.py   generates the messy test invoices
+GEMINI_API_KEY = "..."
+GEMINI_MODEL = "gemini-flash-lite-latest"
 ```
+`packages.txt` installs Tesseract and Poppler automatically. If the chosen Gemini model is busy or retired, the app retries, then tries other Flash models, then falls back to the local reader. The trace shows which one answered.
+
+## Files
+
+| File | What it does |
+|---|---|
+| `app.py` | Streamlit UI: process, dashboard, rules |
+| `ui.py` | Styling + stage / decision components |
+| `config.py` | Every business rule and threshold |
+| `extract.py` | AI extraction (Gemini / Claude / OpenAI) + text-layer / OCR fallback |
+| `pipeline.py` | The 8 stages, findings and decision logic |
+| `db.py` | SQLite run history + PO ledger |
+| `refdata.py` | Loads the vendor master and POs |
+| `vendors.csv`, `purchase_orders.csv`, `po_lines.csv` | The "procurement system" |
+| `01_…08_*.pdf` | Test invoices (see table above) |
+| `make_invoices.py` | Script that generated the test invoices |
 
 ## What I'd build next
 
