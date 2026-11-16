@@ -1,0 +1,8 @@
+po_number,vendor_id,issue_date,status,currency,po_amount_pre_tax,description
+PO-2026-0101,V001,2026-10-20,open,INR,114500,Office stationery and printer consumables - Q4
+PO-2026-0102,V002,2026-09-28,open,INR,120000,Freight services Mumbai-Pune - Oct to Dec 2026
+PO-2026-0103,V003,2026-10-01,open,INR,280000,Cloud hosting and support - November 2026
+PO-2026-0104,V004,2026-10-25,open,INR,97000,Housekeeping and pest control - November 2026
+PO-2026-0105,V004,2026-10-25,open,INR,40000,One-time deep cleaning - Floor 3
+PO-2026-0106,V005,2026-10-10,open,INR,55000,Printed brochures - product launch
+PO-2026-0107,V001,2026-10-28,open,INR,25000,Pantry supplies - November 2026

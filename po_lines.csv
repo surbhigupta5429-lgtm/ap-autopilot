@@ -1,0 +1,13 @@
+po_number,line_no,description,quantity,unit_price
+PO-2026-0101,1,A4 copier paper 75gsm (box of 5 reams),50,1450
+PO-2026-0101,2,Laser toner cartridge 88A,10,4200
+PO-2026-0102,1,Freight services Mumbai-Pune (monthly),3,40000
+PO-2026-0103,1,Cloud hosting - production cluster (monthly),1,250000
+PO-2026-0103,2,24x7 managed support (monthly),1,30000
+PO-2026-0104,1,Housekeeping services (monthly),1,85000
+PO-2026-0104,2,Pest control treatment,1,12000
+PO-2026-0105,1,Deep cleaning - Floor 3 (one-time),1,40000
+PO-2026-0106,1,Product brochures A4 tri-fold,5000,11
+PO-2026-0107,1,Tea and coffee sachets (box),20,450
+PO-2026-0107,2,Disposable paper cups (pack of 100),40,150
+PO-2026-0107,3,Pantry cleaning supplies kit,1,10000
