@@ -16,6 +16,7 @@ import io
 import json
 import os
 import re
+import time
 from datetime import datetime
 
 import pdfplumber
@@ -101,8 +102,10 @@ def _call_claude(b64: str) -> dict:
     return _parse_json("".join(b.get("text", "") for b in r.json()["content"]))
 
 
-def _call_gemini(b64: str) -> dict:
-    model = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
+GEMINI_FALLBACK_MODELS = ["gemini-flash-lite-latest", "gemini-flash-latest", "gemini-2.5-flash-lite", "gemini-2.5-flash"]
+
+
+def _gemini_once(model: str, b64: str) -> requests.Response:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     headers = {"x-goog-api-key": os.environ["GEMINI_API_KEY"], "content-type": "application/json"}
     body = {"contents": [{"parts": [{"inline_data": {"mime_type": "application/pdf", "data": b64}},
@@ -110,13 +113,36 @@ def _call_gemini(b64: str) -> dict:
             "generationConfig": {"responseMimeType": "application/json", "temperature": 0,
                                  # Reading an invoice needs no deep reasoning: keep "thinking" low for speed.
                                  "thinkingConfig": {"thinkingLevel": os.getenv("GEMINI_THINKING", "low")}}}
-    r = requests.post(url, headers=headers, json=body, timeout=45)
+    r = requests.post(url, headers=headers, json=body, timeout=40)
     if r.status_code == 400 and "think" in r.text.lower():  # model without thinking levels: retry plainly
         body["generationConfig"].pop("thinkingConfig")
-        r = requests.post(url, headers=headers, json=body, timeout=45)
-    r.raise_for_status()
-    parts = r.json()["candidates"][0]["content"]["parts"]
-    return _parse_json("".join(p.get("text", "") for p in parts if not p.get("thought")))
+        r = requests.post(url, headers=headers, json=body, timeout=40)
+    return r
+
+
+def _call_gemini(b64: str) -> dict:
+    """Try the configured model, then fall back through other Flash models if one is busy or retired."""
+    preferred = os.getenv("GEMINI_MODEL")
+    models = ([preferred] if preferred else []) + [m for m in GEMINI_FALLBACK_MODELS if m != preferred]
+    errors = []
+    for model in models:
+        for attempt in range(2):  # one quick retry on "busy" responses
+            try:
+                r = _gemini_once(model, b64)
+            except requests.Timeout:
+                errors.append(f"{model}: timed out")
+                break
+            if r.status_code in (429, 500, 503) and attempt == 0:
+                time.sleep(2)
+                continue
+            if r.status_code != 200:
+                errors.append(f"{model}: HTTP {r.status_code}")
+                break
+            parts = r.json()["candidates"][0]["content"]["parts"]
+            data = _parse_json("".join(p.get("text", "") for p in parts if not p.get("thought")))
+            data["_model"] = model
+            return data
+    raise RuntimeError("; ".join(errors))
 
 
 def _call_openai(b64: str) -> dict:
@@ -347,9 +373,11 @@ def extract(file_bytes: bytes, mode: str = "auto") -> tuple[dict, dict]:
         b64 = base64.b64encode(file_bytes).decode()
         for name in available_providers():
             try:
-                data = normalise(PROVIDERS[name](b64))
-                attempts.append({"method": PROVIDER_LABEL[name], "ok": True})
-                meta["method"] = PROVIDER_LABEL[name]
+                raw = PROVIDERS[name](b64)
+                data = normalise(raw)
+                label = PROVIDER_LABEL[name] + (f" · {raw['_model']}" if raw.get("_model") else "")
+                attempts.append({"method": label, "ok": True})
+                meta["method"] = label
                 return data, meta
             except Exception as e:  # noqa: BLE001 — record and fall through to next option
                 attempts.append({"method": PROVIDER_LABEL[name], "ok": False, "error": str(e)[:200]})
