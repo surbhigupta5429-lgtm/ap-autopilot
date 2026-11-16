@@ -43,10 +43,10 @@ STAGES = [
 
 
 # Which reason leads the headline when several apply (most decisive first).
-PRIORITY = ["DUPLICATE_FILE", "DUPLICATE_INVOICE", "BANK_DETAILS_CHANGED", "GSTIN_MISMATCH", "UNKNOWN_VENDOR", "VENDOR_NOT_ACTIVE",
+PRIORITY = ["NOT_AN_INVOICE", "CREDIT_NOTE", "BILL_TO_MISMATCH", "DUPLICATE_FILE", "DUPLICATE_INVOICE", "BANK_DETAILS_CHANGED", "GSTIN_MISMATCH", "UNKNOWN_VENDOR", "VENDOR_NOT_ACTIVE",
             "PO_VENDOR_MISMATCH", "PO_NOT_FOUND", "PO_CLOSED", "PO_EXHAUSTED", "NO_OPEN_PO", "OVER_LIMIT",
             "MISSING_INVOICE_NUMBER", "MISSING_INVOICE_DATE", "EXTRACTION_FAILED", "PRICE_VARIANCE",
-            "UNORDERED_LINE", "OVER_TOLERANCE", "PO_INFERRED", "PO_AMBIGUOUS", "POSSIBLE_DUPLICATE",
+            "UNORDERED_LINE", "CURRENCY_MISMATCH", "WRONG_GST_TYPE", "OVER_TOLERANCE", "PO_INFERRED", "PO_AMBIGUOUS", "POSSIBLE_DUPLICATE",
             "ABOVE_APPROVAL_LIMIT"]
 
 
@@ -106,8 +106,9 @@ def st_extract(ctx: Ctx):
         details.append(("Fallback", f"{a['method']} unavailable: {a.get('error', '')}"))
 
     if ctx.meta["method"] == "none":
-        ctx.flag("extract", "review", "EXTRACTION_FAILED", "Could not read the document at all.",
-                 "AP reviewer", "Key in the invoice manually or request a clearer copy.")
+        why = "it may be corrupt or password-protected" if ctx.meta.get("pages", 1) == 0 else "nothing legible was found"
+        ctx.flag("extract", "review", "EXTRACTION_FAILED", f"Could not read the document ({why}).",
+                 "AP reviewer", "Ask the vendor for an unlocked, readable PDF, or key the invoice in manually.")
         return "fail", "Could not read the document.", details
 
     low = [k for k, v in conf.items() if isinstance(v, (int, float)) and 0 < v < C.LOW_CONFIDENCE_THRESHOLD]
@@ -127,6 +128,38 @@ def st_validate(ctx: Ctx):
     details = []
     status = "pass"
     readable_source = ctx.meta.get("method", "").startswith(("Claude", "Gemini", "OpenAI", "PDF text"))
+
+    # 0a. Is this actually a payable invoice? AP inboxes also receive credit notes, proformas, quotes, statements.
+    doc = d.get("document_type") or "invoice"
+    details.append(("Document type", doc.replace("_", " ").title()))
+    if doc == "credit_note":
+        ctx.flag("validate", "review", "CREDIT_NOTE",
+                 "This is a credit note: the vendor owes us money. There is nothing to pay.", "AP reviewer",
+                 "Apply the credit against the vendor's open balance / next payment instead of paying it.")
+        status = "warn"
+    elif doc in ("proforma", "quotation"):
+        ctx.flag("validate", "block", "NOT_AN_INVOICE",
+                 f"This is a {doc}, not a tax invoice, so it can't be paid or used for GST credit.", "Vendor",
+                 "Ask the vendor for the final tax invoice.")
+        status = "fail"
+    elif doc in ("statement", "other"):
+        ctx.flag("validate", "block", "NOT_AN_INVOICE",
+                 f"This document is a {doc.replace('_', ' ')}, not an invoice.", "AP reviewer",
+                 "Reconcile it against open invoices; do not pay from it.")
+        status = "fail"
+
+    # 0b. Is it addressed to us? Paying a sister company's bill is a classic mistake.
+    buyer = (d.get("buyer_gstin") or "").upper()
+    if buyer:
+        ok = buyer == C.BUYER_GSTIN
+        details.append(("Billed to", f"{buyer} {'✓ that is us' if ok else '✗ not our GSTIN (' + C.BUYER_GSTIN + ')'}"))
+        if not ok:
+            ctx.flag("validate", "block", "BILL_TO_MISMATCH",
+                     f"Invoice is addressed to another company (GSTIN {buyer}), not {C.BUYER_NAME}.", "Vendor",
+                     f"Return to the vendor: re-issue to {C.BUYER_NAME}, GSTIN {C.BUYER_GSTIN}, if it is really ours.")
+            status = "fail"
+    else:
+        details.append(("Billed to", "Buyer GSTIN not printed"))
 
     # 1. Required fields
     missing = [f for f in C.REQUIRED_FIELDS if not d.get(f)]
@@ -262,6 +295,21 @@ def st_vendor(ctx: Ctx):
     else:
         details.append(("GSTIN check", "Not printed on invoice"))
 
+    # GST type: same state -> CGST+SGST, different state -> IGST (else we lose the input tax credit).
+    tt = ctx.data.get("tax_type")
+    if tt in ("IGST", "CGST+SGST") and str(best.get("gstin") or "")[:2].isdigit():
+        same_state = str(best["gstin"])[:2] == C.BUYER_GSTIN[:2]
+        expected = "CGST+SGST" if same_state else "IGST"
+        ok = tt == expected
+        details.append(("GST type", f"{tt} {'✓' if ok else '✗'} (vendor state {best['gstin'][:2]}, ours {C.BUYER_GSTIN[:2]}"
+                                    f" → {expected})"))
+        if not ok:
+            ctx.flag("vendor", "review", "WRONG_GST_TYPE",
+                     f"Invoice charges {tt}, but a {'same' if same_state else 'different'}-state supply must use "
+                     f"{expected}. We would lose the GST input credit.", "Vendor",
+                     f"Ask the vendor to re-issue the invoice with {expected}.")
+            status = "warn" if status == "pass" else status
+
     # Payment-diversion fraud: the #1 invoice scam is "our bank details have changed".
     acct = re.sub(r"\D", "", ctx.data.get("bank_account") or "")
     master_acct = re.sub(r"\D", "", str(best.get("bank_account") or ""))
@@ -278,9 +326,19 @@ def st_vendor(ctx: Ctx):
             status = "fail"
     else:
         details.append(("Bank account check", "Not printed on invoice"))
-    summary = {"pass": f"Approved vendor: {best['vendor_name']}.",
-               "warn": f"Probable match: {best['vendor_name']} — needs confirmation.",
-               "fail": "Vendor cannot be paid as-is."}[status]
+    mine = [f["code"] for f in ctx.findings if f["stage"] == "vendor"]
+    if status == "pass":
+        summary = f"Approved vendor: {best['vendor_name']}."
+    elif "BANK_DETAILS_CHANGED" in mine:
+        summary = "Bank details don't match our records — possible fraud."
+    elif status == "fail":
+        summary = "Vendor cannot be paid as-is."
+    elif "WEAK_VENDOR_MATCH" in mine:
+        summary = f"Probable match: {best['vendor_name']} — needs confirmation."
+    elif "WRONG_GST_TYPE" in mine:
+        summary = f"Approved vendor: {best['vendor_name']}, but the wrong GST type is charged."
+    else:
+        summary = f"Approved vendor: {best['vendor_name']}, with an issue to check."
     return status, summary, details
 
 
@@ -389,9 +447,19 @@ def st_po(ctx: Ctx):
 def st_amounts(ctx: Ctx):
     if any(f["code"].startswith("DUPLICATE") for f in ctx.findings):
         return "skip", "Skipped — invoice is a duplicate.", []
+    if any(f["code"] in ("CREDIT_NOTE", "NOT_AN_INVOICE", "BILL_TO_MISMATCH") for f in ctx.findings):
+        return "skip", "Skipped — not a payable invoice for us.", []
     if not ctx.po or ctx.pre_tax is None:
         return "skip", "Skipped — no PO or no amount to compare.", []
     po = ctx.po
+    raw_cur = str(ctx.data.get("currency") or "INR").upper()
+    cur = "INR" if any(t in raw_cur for t in ("INR", "₹", "RS", "RUPEE")) else (re.sub(r"[^A-Z]", "", raw_cur)[:3] or "INR")
+    if cur != str(po.get("currency", "INR")).upper():
+        ctx.flag("amounts", "review", "CURRENCY_MISMATCH",
+                 f"Invoice is in {cur} but {po['po_number']} is in {po.get('currency', 'INR')}.", "AP reviewer",
+                 "Convert at the agreed rate and get the budget owner's approval before paying.")
+        return "warn", f"Currency mismatch ({cur} vs {po.get('currency', 'INR')}) — amounts not compared.", \
+            [("Invoice currency", cur), ("PO currency", po.get("currency", "INR"))]
     billed = db.billed_against_po(po["po_number"])
     billed_sum = sum(b["pre_tax"] for b in billed)
     remaining = po["po_amount_pre_tax"] - billed_sum

@@ -39,7 +39,7 @@ The **PO ledger** is derived from approved invoices. That's what makes split-inv
 
 ## Test scenarios
 
-**Run all 9 at once** with the batch button; the Dashboard's *Business impact* panel then shows the money stopped and the analyst time saved.
+**Run all 12 at once** with the batch button; the Dashboard's *Business impact* panel then shows the money stopped and the analyst time saved.
 
 Each vendor uses a different layout, label vocabulary ("Invoice No" / "Bill No." / "Invoice #" / "Inv No") and tax presentation (CGST+SGST, a single GST line, IGST-inclusive).
 
@@ -53,9 +53,30 @@ Each vendor uses a different layout, label vocabulary ("Invoice No" / "Bill No."
 | 06 | Duplicate resubmission | Same invoice marked "COPY", number written `INV 1043` instead of `INV-1043` | ⛔ Reject (duplicate) |
 | 07 | Unknown vendor | Not in the vendor master, no invoice date, non-existent PO | ⛔ Reject + vendor email |
 | 09 | Bank details changed (fraud) | Perfect invoice that matches its PO, but the bank account differs from the vendor master. This is the classic "we've changed our bank" payment-diversion scam | ⛔ Reject, verify by phone |
+| 10 | Credit note | A credit note for returned goods lands in the AP inbox; nothing to pay | 🟠 Review: apply to vendor balance |
+| 11 | Wrong GST type | Karnataka vendor billing a Maharashtra buyer with CGST+SGST instead of IGST | 🟠 Review: input credit at risk |
+| 12 | Billed to another company | Real vendor + PO, but the invoice is addressed to a sister company's GSTIN | ⛔ Reject: re-issue |
 | 08 | Bundled lines, close but not exact | One consolidated line covering a 3-line PO, 1.4% over because of delivery charges. Matched on combined value; within the 2% tolerance | ✅ Approve (noted) |
 
 **Order matters:** run 01 before 06, and 02 before 03. Use **Reset demo data** in the sidebar to start clean.
+
+## What the process checks (and why)
+
+Designed for hundreds of invoices a day: **extract only what a decision needs, run cheap checks first, and never pay on uncertainty.**
+
+| Question | Check | If it fails |
+|---|---|---|
+| Can we read it? | file opens; fields extracted with confidence | Review (manual entry) |
+| Is it a payable invoice? | document type: invoice vs credit note / proforma / quote / statement | Review or Reject |
+| Is it ours? | bill-to GSTIN = our GSTIN | Reject |
+| Is it complete and correct? | number, date, total present; lines add up; valid GST slab; date sane | Reject (vendor) / Review |
+| Is the vendor real and approved? | vendor master match, status, GSTIN, **bank account**, correct GST type | Reject (fraud) / Review |
+| Have we seen it before? | normalised number, same file, same amount within 7 days | Reject / Review |
+| Is there a valid PO? | exists, open, same vendor (or inferred, then human-confirmed) | Reject / Review |
+| Do the numbers fit? | currency, unit prices, unordered lines, bundled lines, remaining PO balance | Approve / Review / Reject by tolerance |
+| Is it within authority? | auto-approval limit | Review |
+
+**Output:** one decision (Approve / Needs review / Reject), every reason with an owner and next action, a vendor email when the vendor must act, a payment file (bank details from the vendor master, never from the invoice) and an audit log.
 
 ## Assumptions
 

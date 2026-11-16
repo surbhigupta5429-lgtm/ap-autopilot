@@ -24,13 +24,16 @@ import requests
 
 from config import BUYER_GSTIN
 
-FIELDS = ["vendor_name", "vendor_gstin", "bank_account", "ifsc", "invoice_number", "invoice_date", "po_number",
+FIELDS = ["document_type", "buyer_gstin", "tax_type", "vendor_name", "vendor_gstin", "bank_account", "ifsc", "invoice_number", "invoice_date", "po_number",
           "currency", "subtotal", "tax_amount", "total", "tax_inclusive", "line_items"]
 
 PROMPT = """You are an accounts-payable document reader. Extract data from the attached invoice.
 
 Return ONLY a JSON object with exactly these keys:
 {
+  "document_type": "invoice"|"credit_note"|"proforma"|"quotation"|"statement"|"other",  // what this document really is
+  "buyer_gstin": string|null,          // the BUYER's / bill-to GSTIN, if printed
+  "tax_type": "CGST+SGST"|"IGST"|"none"|null,  // which GST components are charged; null if just "GST" with no split
   "vendor_name": string|null,          // the SELLER issuing the invoice (not the buyer "Zenith Retail")
   "vendor_gstin": string|null,         // the SELLER's GSTIN/tax id, not the buyer's
   "bank_account": string|null,         // the SELLER's bank account number for payment (digits only), if printed
@@ -55,9 +58,13 @@ use null and a low confidence. Never invent values. Do not infer a PO number fro
 # Text layer / OCR
 # --------------------------------------------------------------------------- #
 def pdf_text(file_bytes: bytes) -> tuple[str, int]:
-    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-        text = "\n".join((p.extract_text() or "") for p in pdf.pages)
-        return text, len(pdf.pages)
+    """Text layer + page count. A corrupt or password-protected PDF returns ("", 0) instead of crashing."""
+    try:
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            text = "\n".join((p.extract_text() or "") for p in pdf.pages)
+            return text, len(pdf.pages)
+    except Exception:  # noqa: BLE001
+        return "", 0
 
 
 def ocr_text(file_bytes: bytes) -> str:
@@ -270,8 +277,27 @@ def heuristic_parse(text: str) -> dict:
         po = _label_value(lines, r"(p\.?o\.?\s*(?:no\.?|number|#)?|purchase order|order ref)", r"([A-Z0-9][A-Z0-9/\-]{3,})")
     conf["po_number"] = 0.8 if po else 0.0
 
-    gstins = [g for g in GSTIN_RE.findall(text) if g != BUYER_GSTIN]
+    all_gstins = list(dict.fromkeys(GSTIN_RE.findall(text)))
+    gstins = [g for g in all_gstins if g != BUYER_GSTIN]
     vendor_gstin = gstins[0] if gstins else None
+    buyer_gstin = BUYER_GSTIN if BUYER_GSTIN in all_gstins else (gstins[1] if len(gstins) > 1 else None)
+    low = text.lower()
+    if "credit note" in low:
+        document_type = "credit_note"
+    elif "proforma" in low or "pro-forma" in low:
+        document_type = "proforma"
+    elif "quotation" in low:
+        document_type = "quotation"
+    elif "statement of account" in low:
+        document_type = "statement"
+    else:
+        document_type = "invoice"
+    if re.search(r"\bIGST\b", text):
+        tax_type = "IGST"
+    elif re.search(r"\bCGST\b", text) and re.search(r"\bSGST\b", text):
+        tax_type = "CGST+SGST"
+    else:
+        tax_type = None
     m = re.search(r"(?:a/c|account)(?:\s*(?:no\.?|number))?\s*[:#]?\s*(\d[\d ]{7,20}\d)", text, re.I)
     bank_account = re.sub(r"\D", "", m.group(1)) if m else None
     m = re.search(r"\b([A-Z]{4}0[A-Z0-9]{6})\b", text)
@@ -335,7 +361,8 @@ def heuristic_parse(text: str) -> dict:
     if re.search(r"revised|tariff|price (increase|revision)", text, re.I):
         notes.append("Vendor mentions a price revision.")
 
-    return {"vendor_name": vendor, "vendor_gstin": vendor_gstin, "bank_account": bank_account, "ifsc": ifsc, "invoice_number": inv, "invoice_date": date,
+    return {"document_type": document_type, "buyer_gstin": buyer_gstin, "tax_type": tax_type,
+            "vendor_name": vendor, "vendor_gstin": vendor_gstin, "bank_account": bank_account, "ifsc": ifsc, "invoice_number": inv, "invoice_date": date,
             "po_number": po, "currency": "INR", "line_items": items, "subtotal": subtotal,
             "tax_amount": tax if found_tax else None, "total": total, "tax_inclusive": tax_inclusive,
             "confidence": conf, "notes": " ".join(notes)}
@@ -359,7 +386,11 @@ def normalise(d: dict) -> dict:
                       "unit_price": to_num(it.get("unit_price")),
                       "amount": to_num(it.get("amount"))})
     out["line_items"] = items
-    for k in ("vendor_name", "invoice_number", "po_number", "vendor_gstin", "ifsc"):
+    dt = str(out.get("document_type") or "invoice").lower().replace(" ", "_").replace("-", "_")
+    out["document_type"] = {"tax_invoice": "invoice", "pro_forma": "proforma", "quote": "quotation"}.get(dt, dt)
+    tt = str(out.get("tax_type") or "").upper().replace(" ", "")
+    out["tax_type"] = "IGST" if tt == "IGST" else "CGST+SGST" if "CGST" in tt else ("none" if tt == "NONE" else None)
+    for k in ("vendor_name", "invoice_number", "po_number", "vendor_gstin", "ifsc", "buyer_gstin"):
         if isinstance(out[k], str):
             out[k] = out[k].strip() or None
     if out.get("bank_account"):

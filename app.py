@@ -47,15 +47,21 @@ SCENARIOS = {
     "09_acme_bank_details_changed.pdf": ("Bank details changed (fraud)",
                                          "Everything matches the PO, but the bank account differs from the vendor master: "
                                          "classic payment-diversion fraud."),
+    "10_acme_credit_note.pdf": ("Credit note", "A credit note for returned goods arrives in the AP inbox. Nothing to pay: "
+                                               "it should be applied against the vendor's balance."),
+    "11_northwind_wrong_gst_type.pdf": ("Wrong GST type", "Karnataka vendor billing a Maharashtra buyer with CGST+SGST "
+                                                          "instead of IGST: we'd lose the GST input credit."),
+    "12_greenleaf_billed_to_other_company.pdf": ("Billed to another company",
+                                                 "A real vendor and PO, but the invoice is addressed to a sister company's GSTIN."),
     "07_quickfix_unknown_vendor_missing_date.pdf": ("Unknown vendor",
                                                     "Supplier not in the vendor master, no invoice date, PO that doesn't exist."),
 }
 
 TILE_NAMES = {"04": "Price increase", "05": "Scanned, no PO", "06": "Duplicate", "08": "Bundled lines",
-              "09": "Bank details changed"}
+              "09": "Bank details changed", "10": "Credit note", "11": "Wrong GST type", "12": "Billed to other company"}
 MANUAL_MINUTES_PER_INVOICE = 8  # typical manual AP check per invoice (open, find PO, compare, decide)
 OVERBILL_CODES = ("OVER_TOLERANCE", "OVER_LIMIT", "PRICE_VARIANCE", "UNORDERED_LINE")
-RISK_CODES = ("BANK_DETAILS_CHANGED", "GSTIN_MISMATCH", "UNKNOWN_VENDOR", "VENDOR_NOT_ACTIVE")
+RISK_CODES = ("BANK_DETAILS_CHANGED", "GSTIN_MISMATCH", "UNKNOWN_VENDOR", "VENDOR_NOT_ACTIVE", "BILL_TO_MISMATCH")
 
 # --------------------------------------------------------------------------- #
 # Sidebar
@@ -140,7 +146,10 @@ def render_result(run: dict, file_bytes: bytes | None):
                 st.caption("No line items extracted.")
     with tabs[2]:
         if file_bytes:
-            st.image(ui.pdf_preview(file_bytes), width="stretch")
+            try:
+                st.image(ui.pdf_preview(file_bytes), width="stretch")
+            except Exception:  # noqa: BLE001
+                st.caption("Preview unavailable: the file could not be opened (corrupt or password-protected).")
     with tabs[3]:
         msg = x.get("_vendor_message")
         if msg:
@@ -205,14 +214,25 @@ if page == "Process invoice":
                 run_now = (up.getvalue(), up.name)
         st.markdown('<div class="or-line">or try a test invoice</div>', unsafe_allow_html=True)
     st.markdown(ui.tile_css(len(names)), unsafe_allow_html=True)
-    tile_icons = {"01": "🧾", "02": "📦", "03": "⛽", "04": "📈", "05": "🖨️", "06": "👯", "07": "❓", "08": "🧺", "09": "🏦"}
-    for row in range(0, len(names), 3):
-        cols = st.columns(3, gap="small")
-        for j, n in enumerate(names[row:row + 3]):
-            i = row + j
-            if cols[j].button(f"{tile_icons.get(n[:2], '📄')}  {n[:2]} · {TILE_NAMES.get(n[:2], SCENARIOS[n][0])}",
-                              key=f"tile_{i}", width="stretch", help=SCENARIOS[n][1]):
-                run_now = ((C.SAMPLES_DIR / n).read_bytes(), n)
+    tile_icons = {"01": "🧾", "02": "📦", "03": "⛽", "04": "📈", "05": "🖨️", "06": "👯", "07": "❓", "08": "🧺", "09": "🏦",
+                  "10": "↩️", "11": "🏛️", "12": "📮"}
+
+    def tile_rows(subset, offset):
+        hit = None
+        for row in range(0, len(subset), 3):
+            cols = st.columns(3, gap="small")
+            for j, n in enumerate(subset[row:row + 3]):
+                i = offset + row + j
+                if cols[j].button(f"{tile_icons.get(n[:2], '📄')}  {n[:2]} · {TILE_NAMES.get(n[:2], SCENARIOS[n][0])}",
+                                  key=f"tile_{i}", width="stretch", help=SCENARIOS[n][1]):
+                    hit = ((C.SAMPLES_DIR / n).read_bytes(), n)
+        return hit
+
+    run_now = tile_rows(names[:9], 0) or run_now
+    if len(names) > 9:
+        _, midx, _ = st.columns([0.6, 2.2, 0.6])
+        midx.markdown('<div class="or-line">more real-world checks</div>', unsafe_allow_html=True)
+        run_now = tile_rows(names[9:], 9) or run_now
 
     _, mid2, _ = st.columns([0.6, 2.2, 0.6])
     with mid2:
@@ -378,6 +398,35 @@ elif page == "Dashboard":
     if sel and sel.selection.rows:
         chosen = view[sel.selection.rows[0]]
 
+    # ---- Outputs finance can use directly ----
+    st.markdown("##### Exports")
+    e1, e2, _ = st.columns([1, 1, 1.2])
+    pay_rows = []
+    for r in runs:
+        if r["status"] not in ("approved", "approved_by_reviewer"):
+            continue
+        v = refdata.vendor_by_id(r["vendor_id"]) or {}
+        due = ""
+        if r.get("invoice_date") and v.get("payment_terms_days"):
+            due = (pd.Timestamp(r["invoice_date"]) + pd.Timedelta(days=int(v["payment_terms_days"]))).date().isoformat()
+        pay_rows.append({"vendor_id": r["vendor_id"], "vendor_name": r["vendor_name"], "vendor_gstin": v.get("gstin"),
+                         "bank_account": v.get("bank_account"), "ifsc": v.get("ifsc"),
+                         "invoice_number": r["invoice_number"], "invoice_date": r["invoice_date"],
+                         "po_number": r["po_number"], "amount_inr": r["total"], "due_date": due,
+                         "approved_by": "reviewer" if r["status"] == "approved_by_reviewer" else "auto"})
+    e1.download_button("Payment file (approved invoices)", pd.DataFrame(pay_rows).to_csv(index=False).encode(),
+                       "payment_file.csv", "text/csv", icon=":material/payments:", width="stretch",
+                       disabled=not pay_rows, help="Ready to load into the bank / ERP. Bank details come from the "
+                                                   "vendor master, never from the invoice.")
+    audit = pd.DataFrame([{"run_id": r["id"], "processed_at": r["created_at"], "file": r["file_name"],
+                           "vendor": r["vendor_name"], "invoice_number": r["invoice_number"], "po": r["po_number"],
+                           "total_inr": r["total"], "decision": r["decision"], "status": r["status"],
+                           "reasons": " | ".join(f["message"] for f in r["findings"] if f["severity"] != "info"),
+                           "reviewer_note": r.get("reviewer_note") or "", "engine": r["extraction_method"]}
+                          for r in runs])
+    e2.download_button("Audit log (all runs)", audit.to_csv(index=False).encode(), "audit_log.csv", "text/csv",
+                       icon=":material/fact_check:", width="stretch")
+
     st.markdown("##### PO balances")
     pos = refdata.purchase_orders()
     ledger = []
@@ -448,6 +497,12 @@ else:
 | Extraction confidence | ≥ {C.LOW_CONFIDENCE_THRESHOLD:.0%} per field | Review |
 | Auto-approval limit | {inr(C.MANAGER_APPROVAL_LIMIT_INR)} pre-tax | Review (finance controller) |
 | Invoice age | ≤ {C.MAX_INVOICE_AGE_DAYS} days, not future-dated | Review |
+| Document must be a tax invoice | credit note → apply to balance · proforma / quote / statement → not payable | Review / Reject |
+| Invoice must be billed to us | buyer GSTIN = {C.BUYER_GSTIN} | Reject (vendor to re-issue) |
+| Correct GST type | same state → CGST+SGST · different state → IGST | Review (input credit at risk) |
+| Bank account must match vendor master | exact | Reject (verify by phone, possible fraud) |
+| Invoice currency = PO currency | — | Review (FX approval) |
+| File must be readable | not corrupt / password-protected | Review (manual entry) |
 """)
     st.caption("**Approve** only if nothing needs a human. **Review** if a person must confirm something. "
                "**Reject** if the invoice can't be paid as submitted. The AI only *reads* the document; every "
