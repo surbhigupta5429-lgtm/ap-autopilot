@@ -15,11 +15,12 @@ def now():
     """Local (IST) wall-clock time, naive, for display and storage."""
     return datetime.now(TZ).replace(tzinfo=None)
 
-ROOT = Path(__file__).resolve().parent.parent
+# Works whether files sit in folders (data/po, sample_invoices) or all at the top level.
+ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
-REF_DIR = DATA_DIR / "po"
-DB_PATH = DATA_DIR / "runs.db"
-SAMPLES_DIR = ROOT / "sample_invoices"
+REF_DIR = DATA_DIR / "po" if (DATA_DIR / "po" / "vendors.csv").exists() else ROOT
+DB_PATH = ROOT / "runs.db"
+SAMPLES_DIR = ROOT / "sample_invoices" if (ROOT / "sample_invoices").exists() else ROOT
 
 # Our own company (the buyer). Used to tell our GSTIN apart from the vendor's.
 BUYER_NAME = "Zenith Retail Pvt Ltd"

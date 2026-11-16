@@ -8,7 +8,7 @@ split-invoice detection work.
 import json
 import sqlite3
 
-from .config import DB_PATH, now
+from config import DB_PATH, now
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (

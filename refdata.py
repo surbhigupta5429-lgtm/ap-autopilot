@@ -3,7 +3,7 @@ from functools import lru_cache
 
 import pandas as pd
 
-from .config import REF_DIR
+from config import REF_DIR
 
 
 @lru_cache(maxsize=1)

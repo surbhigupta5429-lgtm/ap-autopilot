@@ -24,10 +24,11 @@ from datetime import date, datetime, timedelta
 
 from rapidfuzz import fuzz
 
-from . import config as C
-from . import db, refdata
-from .extract import extract
-from .fmt import inr, pct
+import config as C
+import db
+import refdata
+from extract import extract
+from fmt import inr, pct
 
 STAGES = [
     ("ingest", "Receive document"),

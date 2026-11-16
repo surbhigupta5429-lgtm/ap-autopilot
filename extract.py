@@ -21,7 +21,7 @@ from datetime import datetime
 import pdfplumber
 import requests
 
-from .config import BUYER_GSTIN
+from config import BUYER_GSTIN
 
 FIELDS = ["vendor_name", "vendor_gstin", "invoice_number", "invoice_date", "po_number",
           "currency", "subtotal", "tax_amount", "total", "tax_inclusive", "line_items"]

@@ -4,7 +4,7 @@ import io
 
 import streamlit as st
 
-from engine.fmt import inr
+from fmt import inr
 
 STATUS = {
     "pending": ("○", "#94a3b8", "#f8fafc", "Waiting"),

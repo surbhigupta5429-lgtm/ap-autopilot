@@ -19,11 +19,12 @@ try:
 except Exception:  # noqa: BLE001 — no secrets file locally is fine
     pass
 
-from engine import config as C  # noqa: E402
-from engine import db, refdata  # noqa: E402
-from engine.extract import PROVIDER_LABEL, available_providers  # noqa: E402
-from engine.fmt import inr  # noqa: E402
-from engine.pipeline import STAGES, rank, run_pipeline  # noqa: E402
+import config as C  # noqa: E402
+import db
+import refdata  # noqa: E402
+from extract import PROVIDER_LABEL, available_providers  # noqa: E402
+from fmt import inr  # noqa: E402
+from pipeline import STAGES, rank, run_pipeline  # noqa: E402
 import ui  # noqa: E402
 
 st.set_page_config(page_title="AP Autopilot · Invoice to Decision", page_icon="🧾", layout="wide")
