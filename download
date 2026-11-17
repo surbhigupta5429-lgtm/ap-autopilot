@@ -1,6 +1,0 @@
-__pycache__/
-*.pyc
-data/runs.db
-.streamlit/secrets.toml
-.venv/
-.DS_Store
