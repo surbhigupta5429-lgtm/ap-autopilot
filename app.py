@@ -272,22 +272,34 @@ if page == "Process invoice":
     tile_icons = {"01": "🧾", "02": "📦", "03": "⛽", "04": "📈", "05": "🖨️", "06": "👯", "07": "❓", "08": "🧺", "09": "🏦",
                   "10": "↩️", "11": "🏛️", "12": "📮"}
 
-    def tile_rows(subset, offset):
+    def tile_rows(subset):
         hit = None
         for row in range(0, len(subset), 3):
             cols = st.columns(3, gap="small")
             for j, n in enumerate(subset[row:row + 3]):
-                i = offset + row + j
+                i = names.index(n)  # stable key per invoice
                 if cols[j].button(f"{tile_icons.get(n[:2], '📄')}  {n[:2]} · {TILE_NAMES.get(n[:2], SCENARIOS[n][0])}",
                                   key=f"tile_{i}", width="stretch", help=SCENARIOS[n][1]):
                     hit = ((C.SAMPLES_DIR / n).read_bytes(), n)
         return hit
 
-    run_now = tile_rows(names[:9], 0) or run_now
-    if len(names) > 9:
-        _, midx, _ = st.columns([0.6, 2.2, 0.6])
-        midx.markdown('<div class="or-line">more real-world checks</div>', unsafe_allow_html=True)
-        run_now = tile_rows(names[9:], 9) or run_now
+    def group_label(icon, title, sub):
+        st.markdown(f'<div class="glabel"><span class="gi">{icon}</span><b>{title}</b><span class="gs">{sub}</span></div>',
+                    unsafe_allow_html=True)
+
+    by_no = {n[:2]: n for n in names}
+    pick = lambda nos: [by_no[x] for x in nos if x in by_no]
+    happy, edge = pick(["01"]), pick(["02", "03", "09", "06", "05"])
+    more = [n for n in names if n not in happy + edge]
+
+    group_label("✅", "Happy path", "a clean invoice that matches its PO")
+    run_now = tile_rows(happy) or run_now
+    group_label("🎯", "My 4 edge cases", "① split PO with an unagreed surcharge (run 02, then 03) · ② bank details "
+                                         "changed · ③ disguised duplicate (run after 01) · ④ scanned, no PO number")
+    run_now = tile_rows(edge) or run_now
+    group_label("➕", "More real-world checks", "price creep, unknown vendor, bundled lines, credit note, "
+                                               "wrong GST type, billed to another company")
+    run_now = tile_rows(more) or run_now
 
     _, mid2, _ = st.columns([0.6, 2.2, 0.6])
     with mid2:
@@ -310,7 +322,9 @@ if page == "Process invoice":
         # 1) Read in parallel: the slow part (AI vision), and every file is independent.
         read = {}
         with ThreadPoolExecutor(max_workers=BATCH_READERS) as pool:
-            read_mode = "smart" if mode == "auto" else mode  # batch: AI only where the free reader isn't enough
+            # Batches always use smart routing (free reader first, AI only for hard documents), whatever the
+            # single-invoice engine setting, so a big batch never queues 100 calls behind the AI rate limit.
+            read_mode = "local" if mode == "local" else "smart"
             futs = {pool.submit(read_invoice, fb, read_mode): i for i, (fb, _) in enumerate(batch_files)}
             for k, fut in enumerate(as_completed(futs), 1):
                 read[futs[fut]] = fut.result()

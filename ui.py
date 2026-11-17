@@ -214,6 +214,12 @@ table.fields td.k { color: #64748b; width: 34%; }
 .itile .is { font-size: .74rem; opacity: .8; margin-top: 2px; }
 .impact-note { font-size: .74rem; opacity: .7; margin-top: 12px; }
 
+/* ---------- Tile group labels ---------- */
+.glabel { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 18px 0 8px 2px; color: #1e1b4b; }
+.glabel .gi { font-size: 1.1rem; }
+.glabel b { font-size: 1.05rem; font-weight: 800; }
+.glabel .gs { color: #64748b; font-size: .86rem; }
+
 /* ---------- Review queue + window ---------- */
 .queuebar { padding: 14px 18px; border-radius: 14px; background: #fffbeb; border: 1px solid #fcd34d; color: #78350f;
   font-size: .95rem; }
