@@ -25,7 +25,9 @@ import db
 import refdata  # noqa: E402
 from extract import PROVIDER_LABEL, available_providers  # noqa: E402
 from fmt import inr  # noqa: E402
-from pipeline import STAGES, rank, run_pipeline, run_sync  # noqa: E402
+from pipeline import STAGES, rank, run_pipeline, run_sync
+from extract import extract as read_invoice
+from concurrent.futures import ThreadPoolExecutor, as_completed  # noqa: E402
 import ui  # noqa: E402
 
 st.set_page_config(page_title="AP Autopilot · Invoice to Decision", page_icon="🧾", layout="wide")
@@ -59,6 +61,7 @@ SCENARIOS = {
 
 TILE_NAMES = {"04": "Price increase", "05": "Scanned, no PO", "06": "Duplicate", "08": "Bundled lines",
               "09": "Bank details changed", "10": "Credit note", "11": "Wrong GST type", "12": "Billed to other company"}
+BATCH_READERS = 4  # invoices read at the same time (kept low to respect AI rate limits)
 MANUAL_MINUTES_PER_INVOICE = 8  # typical manual AP check per invoice (open, find PO, compare, decide)
 OVERBILL_CODES = ("OVER_TOLERANCE", "OVER_LIMIT", "PRICE_VARIANCE", "UNORDERED_LINE")
 RISK_CODES = ("BANK_DETAILS_CHANGED", "GSTIN_MISMATCH", "UNKNOWN_VENDOR", "VENDOR_NOT_ACTIVE", "BILL_TO_MISMATCH")
@@ -188,9 +191,9 @@ def stage_grid():
 
 st.markdown('<div id="page-top"></div>', unsafe_allow_html=True)
 if st.session_state.pop("scroll_top", False):
-    run_js("setTimeout(function(){var el=window.parent.document.getElementById('page-top');if(!el)return;"
+    run_js("function up(){var el=window.parent.document.getElementById('page-top');if(!el)return;"
            "var p=el.parentElement;while(p&&p.scrollHeight<=p.clientHeight){p=p.parentElement;}"
-           "if(p){p.scrollTo({top:0,behavior:'smooth'});}},300);")
+           "if(p){p.scrollTo({top:0});}} setTimeout(up,300); setTimeout(up,900);")
 
 
 # --------------------------------------------------------------------------- #
@@ -204,14 +207,25 @@ if page == "Process invoice":
 
     _, mid, _ = st.columns([0.6, 2.2, 0.6])
     run_now = None
+    batch_files = None
     with mid:
-        up = st.file_uploader("Invoice PDF", type=["pdf"], label_visibility="collapsed", key="uploader")
-        if up:
+        ups = st.file_uploader("Invoice PDFs", type=["pdf"], label_visibility="collapsed", key="uploader",
+                               accept_multiple_files=True)
+        if ups and len(ups) == 1:
+            up = ups[0]
             st.markdown(f'<div class="filechip"><div class="ic">📄</div><div><div class="nm">{ui.e(up.name)}</div>'
                         f'<div class="sz">{len(up.getvalue()) / 1024:.1f} KB · ready to process</div></div></div>',
                         unsafe_allow_html=True)
             if st.button("Run process", key="run_btn", icon=":material/play_arrow:", type="primary", width="stretch"):
                 run_now = (up.getvalue(), up.name)
+        elif ups:
+            size = sum(len(u.getvalue()) for u in ups) / 1024 / 1024
+            st.markdown(f'<div class="filechip"><div class="ic">🗂️</div><div><div class="nm">{len(ups)} invoices selected</div>'
+                        f'<div class="sz">{size:.1f} MB · read in parallel, decided one by one in order</div></div></div>',
+                        unsafe_allow_html=True)
+            if st.button(f"Process all {len(ups)} invoices", key="run_btn", icon=":material/play_arrow:", type="primary",
+                         width="stretch"):
+                batch_files = [(u.getvalue(), u.name) for u in ups]
         st.markdown('<div class="or-line">or try a test invoice</div>', unsafe_allow_html=True)
     st.markdown(ui.tile_css(len(names)), unsafe_allow_html=True)
     tile_icons = {"01": "🧾", "02": "📦", "03": "⛽", "04": "📈", "05": "🖨️", "06": "👯", "07": "❓", "08": "🧺", "09": "🏦",
@@ -243,18 +257,34 @@ if page == "Process invoice":
                                   "like a month's inbox arriving at once.")
     if batch_go:
         db.reset()
+        batch_files = [((C.SAMPLES_DIR / n).read_bytes(), n) for n in names]
+    if batch_files:
         st.session_state.pop("last_run", None)
-        st.markdown('<div id="batch"></div>' + ui.section("📚", "Batch run", f"{len(names)} invoices, one click"),
+        st.markdown('<div id="batch"></div>' + ui.section("📚", "Batch run", f"{len(batch_files)} invoices"),
                     unsafe_allow_html=True)
         scroll_to("batch")
-        prog = st.progress(0.0, text="Starting batch…")
-        table_slot = st.empty()
-        results, t0 = [], time.perf_counter()
-        for i, n in enumerate(names):
-            prog.progress(i / len(names), text=f"Processing {n[:2]} · {TILE_NAMES.get(n[:2], SCENARIOS[n][0])}…")
-            results.append(run_sync((C.SAMPLES_DIR / n).read_bytes(), n, mode))
-            table_slot.markdown(ui.batch_table(results), unsafe_allow_html=True)
-        prog.progress(1.0, text=f"Done: {len(names)} invoices in {time.perf_counter() - t0:.1f} s")
+        prog = st.progress(0.0, text="Reading invoices…")
+        counts_slot, table_slot = st.empty(), st.empty()
+        t0 = time.perf_counter()
+        # 1) Read in parallel: the slow part (AI vision), and every file is independent.
+        read = {}
+        with ThreadPoolExecutor(max_workers=BATCH_READERS) as pool:
+            futs = {pool.submit(read_invoice, fb, mode): i for i, (fb, _) in enumerate(batch_files)}
+            for k, fut in enumerate(as_completed(futs), 1):
+                read[futs[fut]] = fut.result()
+                prog.progress(0.5 * k / len(batch_files),
+                              text=f"Reading {k}/{len(batch_files)} in parallel ({BATCH_READERS} at a time)…")
+        # 2) Decide one by one, in arrival order: duplicates and PO balances depend on what came before.
+        results = []
+        for i, (fb, fn) in enumerate(batch_files):
+            prog.progress(0.5 + 0.5 * (i + 1) / len(batch_files), text=f"Deciding {i + 1}/{len(batch_files)} in order…")
+            results.append(run_sync(fb, fn, mode, extracted=read[i]))
+            counts_slot.markdown(ui.batch_counts(Counter(r["decision"] for r in results), len(batch_files)),
+                                 unsafe_allow_html=True)
+            if len(batch_files) <= 30 or i == len(batch_files) - 1 or i % 10 == 0:
+                table_slot.markdown(ui.batch_table(results), unsafe_allow_html=True)
+        secs = time.perf_counter() - t0
+        prog.progress(1.0, text=f"Done: {len(batch_files)} invoices in {secs:.1f} s (~{secs / len(batch_files):.1f} s each)")
         st.session_state["batch_done"] = results
     elif st.session_state.get("batch_done") and not run_now:
         st.markdown(ui.section("📚", "Batch run", "last batch"), unsafe_allow_html=True)

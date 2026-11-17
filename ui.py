@@ -356,14 +356,27 @@ def impact_panel(n, protected, dup_val, dup_n, over_val, risk_val, risk_n, manua
             f'(open, find the PO, compare, decide).</div></div>')
 
 
+def batch_counts(c, total: int) -> str:
+    done = sum(c.values())
+    parts = [("✓ Approved", c.get("APPROVE", 0), "#16a34a", "#dcfce7"), ("! Needs review", c.get("REVIEW", 0), "#d97706", "#fef3c7"),
+             ("✕ Rejected", c.get("REJECT", 0), "#dc2626", "#fee2e2")]
+    chips = " ".join(f'<span class="chip" style="--c:{col};--bg:{bg};font-size:.9rem;padding:6px 14px">{lab}: {n}</span>'
+                     for lab, n, col, bg in parts)
+    return f'<div style="margin:8px 0 12px 0">{chips} <span style="color:#64748b;margin-left:8px">{done}/{total} decided</span></div>'
+
+
 def batch_table(runs: list[dict]) -> str:
     rows = []
-    for r in runs:
+    numbered = list(enumerate(runs, 1))
+    if len(runs) > 30:  # big batch: put what needs attention first
+        order = {"REJECT": 0, "REVIEW": 1, "APPROVE": 2}
+        numbered.sort(key=lambda x: (order[x[1]["decision"]], x[0]))
+    for idx, r in numbered:
         label, _, icon = DECISION[r["decision"]]
         c = {"APPROVE": "#16a34a", "REVIEW": "#d97706", "REJECT": "#dc2626"}[r["decision"]]
         bg = {"APPROVE": "#dcfce7", "REVIEW": "#fef3c7", "REJECT": "#fee2e2"}[r["decision"]]
         short = {"APPROVE": "Approved", "REVIEW": "Needs review", "REJECT": "Rejected"}[r["decision"]]
-        rows.append(f'<tr style="--c:{c}"><td>{e(r["file_name"][:2])}</td>'
+        rows.append(f'<tr style="--c:{c}"><td>{idx}</td>'
                     f'<td class="nm">{e(r.get("vendor_name"))}<br><span style="font-weight:500;color:#64748b">'
                     f'{e(r.get("invoice_number"))}</span></td><td>{inr(r.get("total"), 0)}</td>'
                     f'<td>{chip(icon + " " + short, c, bg)}</td><td>{e(r["headline"].split(" — ", 1)[-1])}</td></tr>')

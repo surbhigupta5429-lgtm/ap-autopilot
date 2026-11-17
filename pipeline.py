@@ -97,7 +97,8 @@ def st_ingest(ctx: Ctx):
 
 
 def st_extract(ctx: Ctx):
-    ctx.data, ctx.meta = extract(ctx.file_bytes, ctx.mode)
+    # In a batch, reading happens in parallel beforehand; decisions still run one by one, in order.
+    ctx.data, ctx.meta = ctx.pre_extracted or extract(ctx.file_bytes, ctx.mode)
     d, conf = ctx.data, ctx.data.get("confidence", {})
     doc_type = "Digital PDF (text layer)" if ctx.meta["text_layer"] else "Scanned image (no text layer)"
     details = [("Document type", doc_type), ("Pages", ctx.meta["pages"]), ("Extraction method", ctx.meta["method"])]
@@ -599,8 +600,10 @@ def vendor_message(ctx: Ctx, decision: str) -> str | None:
 # --------------------------------------------------------------------------- #
 # Orchestrator
 # --------------------------------------------------------------------------- #
-def run_pipeline(file_bytes: bytes, file_name: str, mode: str = "auto", today: date | None = None, save: bool = True):
+def run_pipeline(file_bytes: bytes, file_name: str, mode: str = "auto", today: date | None = None, save: bool = True,
+                 extracted: tuple | None = None):
     ctx = Ctx(file_bytes, file_name, mode, today)
+    ctx.pre_extracted = extracted
     run_id = uuid.uuid4().hex[:10]
     stages = []
     decision = "REVIEW"
@@ -642,7 +645,7 @@ def run_pipeline(file_bytes: bytes, file_name: str, mode: str = "auto", today: d
     yield {"type": "complete", "run": run}
 
 
-def run_sync(file_bytes, file_name, mode="auto", today=None, save=True) -> dict:
-    for ev in run_pipeline(file_bytes, file_name, mode, today, save):
+def run_sync(file_bytes, file_name, mode="auto", today=None, save=True, extracted=None) -> dict:
+    for ev in run_pipeline(file_bytes, file_name, mode, today, save, extracted):
         if ev["type"] == "complete":
             return ev["run"]

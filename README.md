@@ -78,6 +78,17 @@ Designed for hundreds of invoices a day: **extract only what a decision needs, r
 
 **Output:** one decision (Approve / Needs review / Reject), every reason with an owner and next action, a vendor email when the vendor must act, a payment file (bank details from the vendor master, never from the invoice) and an audit log.
 
+## Scale: hundreds of invoices
+
+Drop many PDFs into the upload box at once (try the **100-invoice month inbox** pack). The batch runs in two phases:
+
+1. **Read in parallel**: the slow part (AI vision); every file is independent, so 4 are read at a time (kept low to respect AI rate limits; busy models are retried or swapped automatically).
+2. **Decide one by one, in arrival order**: duplicate detection and PO balances depend on what came before, so decisions are never parallel; two copies of the same invoice can never both be approved.
+
+Results list problems first (rejected, then review, then approved) so a reviewer starts where the work is. The test pack (`make_inbox.py`) is a realistic month: 70 clean (incl. 20 split POs), 8 price creep, 4 without PO numbers, 2 credit notes, 2 wrong GST type, 5 disguised duplicates, 3 unknown vendors, 2 bank-detail frauds, 2 billed to a sister company, 2 over-billed. Expected 70 approved / 16 review / 14 rejected, and that's what the process returns.
+
+In production this becomes: inbox listener → queue → the same pipeline, with Postgres instead of SQLite and the ERP instead of CSVs.
+
 ## Assumptions
 
 - Buyer is *Zenith Retail Pvt Ltd* (Mumbai). Currency INR, GST regime.
