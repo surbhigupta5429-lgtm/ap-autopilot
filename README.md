@@ -82,7 +82,9 @@ Designed for hundreds of invoices a day: **extract only what a decision needs, r
 
 Drop many PDFs into the upload box at once (try the **100-invoice month inbox** pack). The batch runs in two phases:
 
-1. **Read in parallel**: the slow part (AI vision); every file is independent, so 4 are read at a time (kept low to respect AI rate limits; busy models are retried or swapped automatically).
+1. **Read in parallel, AI only where needed**: every file is independent, so 4 are read at a time. Each one first goes through the free text-layer reader; only documents it can't fully read (scans, missing fields, numbers that don't add up) are sent to the AI. In the 100-invoice pack that's 2 of 100.
+   - **Rate limiter:** AI calls are spaced to stay under `AI_MAX_RPM` (default 12/min), even with parallel readers.
+   - **Circuit breaker:** if every model reports its quota is used up, AI pauses for 60 s and the offline reader / OCR takes over instead of hammering the API.
 2. **Decide one by one, in arrival order**: duplicate detection and PO balances depend on what came before, so decisions are never parallel; two copies of the same invoice can never both be approved.
 
 Results list problems first (rejected, then review, then approved) so a reviewer starts where the work is. The test pack (`make_inbox.py`) is a realistic month: 70 clean (incl. 20 split POs), 8 price creep, 4 without PO numbers, 2 credit notes, 2 wrong GST type, 5 disguised duplicates, 3 unknown vendors, 2 bank-detail frauds, 2 billed to a sister company, 2 over-billed. Expected 70 approved / 16 review / 14 rejected, and that's what the process returns.

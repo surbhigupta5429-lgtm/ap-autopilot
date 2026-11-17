@@ -61,7 +61,7 @@ SCENARIOS = {
 
 TILE_NAMES = {"04": "Price increase", "05": "Scanned, no PO", "06": "Duplicate", "08": "Bundled lines",
               "09": "Bank details changed", "10": "Credit note", "11": "Wrong GST type", "12": "Billed to other company"}
-BATCH_READERS = 4  # invoices read at the same time (kept low to respect AI rate limits)
+BATCH_READERS = 4  # invoices read at the same time; AI calls are additionally rate-limited in extract.py
 MANUAL_MINUTES_PER_INVOICE = 8  # typical manual AP check per invoice (open, find PO, compare, decide)
 OVERBILL_CODES = ("OVER_TOLERANCE", "OVER_LIMIT", "PRICE_VARIANCE", "UNORDERED_LINE")
 RISK_CODES = ("BANK_DETAILS_CHANGED", "GSTIN_MISMATCH", "UNKNOWN_VENDOR", "VENDOR_NOT_ACTIVE", "BILL_TO_MISMATCH")
@@ -221,7 +221,7 @@ if page == "Process invoice":
         elif ups:
             size = sum(len(u.getvalue()) for u in ups) / 1024 / 1024
             st.markdown(f'<div class="filechip"><div class="ic">🗂️</div><div><div class="nm">{len(ups)} invoices selected</div>'
-                        f'<div class="sz">{size:.1f} MB · read in parallel, decided one by one in order</div></div></div>',
+                        f'<div class="sz">{size:.1f} MB · AI used only where needed · decided one by one, in order</div></div></div>',
                         unsafe_allow_html=True)
             if st.button(f"Process all {len(ups)} invoices", key="run_btn", icon=":material/play_arrow:", type="primary",
                          width="stretch"):
@@ -269,7 +269,8 @@ if page == "Process invoice":
         # 1) Read in parallel: the slow part (AI vision), and every file is independent.
         read = {}
         with ThreadPoolExecutor(max_workers=BATCH_READERS) as pool:
-            futs = {pool.submit(read_invoice, fb, mode): i for i, (fb, _) in enumerate(batch_files)}
+            read_mode = "smart" if mode == "auto" else mode  # batch: AI only where the free reader isn't enough
+            futs = {pool.submit(read_invoice, fb, read_mode): i for i, (fb, _) in enumerate(batch_files)}
             for k, fut in enumerate(as_completed(futs), 1):
                 read[futs[fut]] = fut.result()
                 prog.progress(0.5 * k / len(batch_files),
@@ -284,7 +285,10 @@ if page == "Process invoice":
             if len(batch_files) <= 30 or i == len(batch_files) - 1 or i % 10 == 0:
                 table_slot.markdown(ui.batch_table(results), unsafe_allow_html=True)
         secs = time.perf_counter() - t0
-        prog.progress(1.0, text=f"Done: {len(batch_files)} invoices in {secs:.1f} s (~{secs / len(batch_files):.1f} s each)")
+        how = Counter("AI" if r["extraction_method"].startswith(("Gemini", "Claude", "OpenAI")) else
+                      "OCR" if "OCR" in r["extraction_method"] else "text" for r in results)
+        prog.progress(1.0, text=f"Done: {len(batch_files)} invoices in {secs:.1f} s · read by text layer: {how['text']}"
+                                f" · by AI: {how['AI']} · by OCR: {how['OCR']}")
         st.session_state["batch_done"] = results
     elif st.session_state.get("batch_done") and not run_now:
         st.markdown(ui.section("📚", "Batch run", "last batch"), unsafe_allow_html=True)

@@ -16,6 +16,7 @@ import io
 import json
 import os
 import re
+import threading
 import time
 from datetime import datetime
 
@@ -114,6 +115,32 @@ def _call_claude(b64: str) -> dict:
 GEMINI_FALLBACK_MODELS = ["gemini-flash-lite-latest", "gemini-flash-latest", "gemini-2.5-flash-lite", "gemini-2.5-flash"]
 
 
+# --------------------------------------------------------------------------- #
+# Protecting the AI quota (free tiers allow only a few requests per minute / day)
+# --------------------------------------------------------------------------- #
+_ai_lock = threading.Lock()
+_ai_state = {"last_call": 0.0, "paused_until": 0.0}
+
+
+def _throttle():
+    """Space AI calls so we stay under AI_MAX_RPM (default 12/min), even with several readers in parallel."""
+    gap = 60.0 / max(float(os.getenv("AI_MAX_RPM", "12")), 1.0)
+    with _ai_lock:
+        wait = _ai_state["last_call"] + gap - time.time()
+        if wait > 0:
+            time.sleep(wait)
+        _ai_state["last_call"] = time.time()
+
+
+def ai_paused() -> float:
+    """Seconds left on the circuit breaker (0 = AI available)."""
+    return max(0.0, _ai_state["paused_until"] - time.time())
+
+
+def _pause_ai(seconds: float = 60):
+    _ai_state["paused_until"] = max(_ai_state["paused_until"], time.time() + seconds)
+
+
 def _gemini_once(model: str, b64: str) -> requests.Response:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     headers = {"x-goog-api-key": os.environ["GEMINI_API_KEY"], "content-type": "application/json"}
@@ -122,6 +149,7 @@ def _gemini_once(model: str, b64: str) -> requests.Response:
             "generationConfig": {"responseMimeType": "application/json", "temperature": 0,
                                  # Reading an invoice needs no deep reasoning: keep "thinking" low for speed.
                                  "thinkingConfig": {"thinkingLevel": os.getenv("GEMINI_THINKING", "low")}}}
+    _throttle()
     r = requests.post(url, headers=headers, json=body, timeout=40)
     if r.status_code == 400 and "think" in r.text.lower():  # model without thinking levels: retry plainly
         body["generationConfig"].pop("thinkingConfig")
@@ -135,22 +163,24 @@ def _call_gemini(b64: str) -> dict:
     models = ([preferred] if preferred else []) + [m for m in GEMINI_FALLBACK_MODELS if m != preferred]
     errors = []
     for model in models:
-        for attempt in range(2):  # one quick retry on "busy" responses
+        for attempt in range(2):  # one quick retry on a temporarily busy server (not on quota errors)
             try:
                 r = _gemini_once(model, b64)
             except requests.Timeout:
                 errors.append(f"{model}: timed out")
                 break
-            if r.status_code in (429, 500, 503) and attempt == 0:
+            if r.status_code in (500, 503) and attempt == 0:
                 time.sleep(2)
                 continue
             if r.status_code != 200:
-                errors.append(f"{model}: HTTP {r.status_code}")
+                errors.append(f"{model}: HTTP {r.status_code}" + (" (rate limit)" if r.status_code == 429 else ""))
                 break
             parts = r.json()["candidates"][0]["content"]["parts"]
             data = _parse_json("".join(p.get("text", "") for p in parts if not p.get("thought")))
             data["_model"] = model
             return data
+    if errors and all("rate limit" in e for e in errors):
+        _pause_ai(60)  # every model is out of quota: stop hammering, use the offline reader for a minute
     raise RuntimeError("; ".join(errors))
 
 
@@ -398,6 +428,19 @@ def normalise(d: dict) -> dict:
     return out
 
 
+def is_complete(d: dict) -> bool:
+    """Is a rule-based read good enough to decide on without the AI?"""
+    if not all(d.get(k) for k in ("vendor_name", "invoice_number", "invoice_date", "total")) or not d.get("line_items"):
+        return False
+    if any(i.get("amount") is None for i in d["line_items"]):
+        return False
+    line_sum = sum(i["amount"] for i in d["line_items"])
+    sub = d.get("subtotal")
+    if sub is None and d.get("tax_amount") is not None:
+        sub = d["total"] - d["tax_amount"]
+    return any(t is not None and abs(line_sum - t) <= 1 for t in (sub, d["total"]))
+
+
 def extract(file_bytes: bytes, mode: str = "auto") -> tuple[dict, dict]:
     """mode: 'auto' (AI if a key is configured, else local) | 'ai' | 'local'.
 
@@ -408,6 +451,20 @@ def extract(file_bytes: bytes, mode: str = "auto") -> tuple[dict, dict]:
     has_text = len(text.strip()) > 40
     meta = {"pages": pages, "text_layer": has_text, "attempts": attempts}
 
+    if mode == "smart":
+        # Batch mode: try the free text reader first; only send the document to the AI if that read is
+        # incomplete (scans, missing fields, numbers that don't add up). Saves quota and time.
+        if has_text:
+            quick = normalise(heuristic_parse(text))
+            if is_complete(quick):
+                meta["method"] = "PDF text layer + rules (AI not needed)"
+                attempts.append({"method": meta["method"], "ok": True})
+                return quick, meta
+        mode = "auto"
+    if mode in ("auto", "ai") and ai_paused():
+        attempts.append({"method": "AI extraction", "ok": False,
+                         "error": f"AI paused {ai_paused():.0f}s: free-tier rate limit reached"})
+        mode = "local"
     if mode in ("auto", "ai"):
         b64 = base64.b64encode(file_bytes).decode()
         for name in available_providers():
