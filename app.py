@@ -289,16 +289,18 @@ if page == "Process invoice":
 
     by_no = {n[:2]: n for n in names}
     pick = lambda nos: [by_no[x] for x in nos if x in by_no]
-    happy, edge = pick(["01"]), pick(["02", "03", "09", "06", "05"])
+    happy, edge = pick(["01"]), pick(["09", "06", "11", "10"])
     more = [n for n in names if n not in happy + edge]
 
     group_label("✅", "Happy path", "a clean invoice that matches its PO")
     run_now = tile_rows(happy) or run_now
-    group_label("🎯", "My 4 edge cases", "① split PO with an unagreed surcharge (run 02, then 03) · ② bank details "
-                                         "changed · ③ disguised duplicate (run after 01) · ④ scanned, no PO number")
+    group_label("🎯", "My 4 edge cases, beyond the brief",
+                "① bank details changed (payment fraud) · ② disguised duplicate (run after 01) · "
+                "③ wrong GST type (tax credit at risk) · ④ credit note in the invoice inbox")
     run_now = tile_rows(edge) or run_now
-    group_label("➕", "More real-world checks", "price creep, unknown vendor, bundled lines, credit note, "
-                                               "wrong GST type, billed to another company")
+    group_label("📋", "Every messy case the brief lists, handled",
+                "split PO + close-but-not-exact (02 → 03) · tax embedded + price creep (04) · scanned with an implied PO (05) · "
+                "missing invoice data (07) · bundled lines (08) · plus: billed to another company (12)")
     run_now = tile_rows(more) or run_now
 
     _, mid2, _ = st.columns([0.6, 2.2, 0.6])

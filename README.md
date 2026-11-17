@@ -37,6 +37,15 @@ The decision is the worst severity found. Each finding names an **owner** (AP re
 
 The **PO ledger** is derived from approved invoices. That's what makes split-invoice tracking work: pending or rejected invoices never consume PO balance. When a reviewer approves an invoice, the balance updates immediately.
 
+## My edge cases (beyond the brief)
+
+The brief lists the mess every AP process must handle: split POs, close-but-not-exact amounts, scans, implied POs, bundled lines, embedded tax, missing data. All of that is handled (see the scenarios table). These four are the realistic problems **I** added, each one looks fine to a naive matcher:
+
+1. **Bank details changed (09):** vendor, PO and prices all match, but the bank account differs from the vendor master. This is the most common invoice fraud, so the invoice is blocked and must be verified by phone using the number on record.
+2. **Disguised duplicate (06):** the same invoice re-sent as a "copy" with the number written `INV 1043` instead of `INV-1043`. Numbers are normalised and checked against approved and pending invoices.
+3. **Wrong GST type (11):** the amounts are right, but a Karnataka vendor billing a Maharashtra buyer charged CGST+SGST instead of IGST, so the company would lose the input tax credit. The vendor must re-issue.
+4. **Credit note in the invoice inbox (10):** not every PDF is a bill. A credit note means the vendor owes *us*; it is routed to be applied against the balance, never paid.
+
 ## Test scenarios
 
 **Run all 12 at once** with the batch button; the Dashboard's *Business impact* panel then shows the money stopped and the analyst time saved.
