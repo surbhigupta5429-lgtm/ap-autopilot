@@ -214,6 +214,13 @@ table.fields td.k { color: #64748b; width: 34%; }
 .itile .is { font-size: .74rem; opacity: .8; margin-top: 2px; }
 .impact-note { font-size: .74rem; opacity: .7; margin-top: 12px; }
 
+/* ---------- Review queue + window ---------- */
+.queuebar { padding: 14px 18px; border-radius: 14px; background: #fffbeb; border: 1px solid #fcd34d; color: #78350f;
+  font-size: .95rem; }
+.reviewbox { border: 2px solid #c7d2fe; background: #f5f3ff; border-radius: 16px; padding: 14px 16px 4px 16px; margin: 12px 0 6px 0; }
+.rb-title { font-weight: 800; color: #3730a3; font-size: 1rem; margin-bottom: 6px; }
+.rb-step { color: #334155; font-size: .9rem; margin: 2px 0; }
+
 /* ---------- Batch results ---------- */
 table.batch { width: 100%; border-collapse: separate; border-spacing: 0 6px; font-size: .88rem; }
 table.batch td { background: #fff; padding: 10px 12px; border-top: 1px solid #eef2ff; border-bottom: 1px solid #eef2ff; }

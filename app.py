@@ -180,6 +180,47 @@ def scroll_to(anchor_id: str):
            "if(el){el.scrollIntoView({behavior:'smooth',block:'start'});}},300);" % anchor_id)
 
 
+@st.dialog("Invoice review", width="large")
+def review_dialog(run_id: str):
+    run = db.get_run(run_id)
+    if not run:
+        st.error("Run not found.")
+        return
+    con = db.connect()
+    fb = con.execute("SELECT file_bytes FROM runs WHERE id=?", (run_id,)).fetchone()[0]
+    con.close()
+    st.markdown(f'{ui.status_chip(run["status"])} &nbsp; <b>{ui.e(run["vendor_name"])}</b> · {ui.e(run["invoice_number"])} · '
+                f'{inr(run.get("total"), 2)} · <span style="color:#64748b">{ui.e(run["file_name"])}</span>',
+                unsafe_allow_html=True)
+
+    if run["status"] == "pending_review":
+        with st.container(border=True):
+            todo = [f for f in run["findings"] if f["severity"] == "review" and f.get("action")]
+            st.markdown('<div class="rb-title">✍️ Your decision</div>' +
+                        "".join(f'<div class="rb-step">→ {ui.e(f["action"])}</div>' for f in todo),
+                        unsafe_allow_html=True)
+            note = st.text_area("Note for the audit trail", key=f"note_{run_id}",
+                                placeholder="e.g. Price revision confirmed with procurement (email 12 Nov).")
+            c1, c2 = st.columns(2)
+            if c1.button("Approve for payment", key=f"ok_{run_id}", icon=":material/check_circle:", type="primary",
+                         width="stretch"):
+                db.review_run(run_id, True, note)
+                st.session_state.flash = f"Approved {run['invoice_number']}: PO balance updated"
+                st.session_state.hist_ver = st.session_state.get("hist_ver", 0) + 1
+                st.rerun()
+            if c2.button("Reject", key=f"no_{run_id}", icon=":material/cancel:", width="stretch"):
+                db.review_run(run_id, False, note)
+                st.session_state.flash = f"Rejected {run['invoice_number']}"
+                st.session_state.hist_ver = st.session_state.get("hist_ver", 0) + 1
+                st.rerun()
+    elif run.get("reviewed_at"):
+        st.info(f"Reviewed {run['reviewed_at'].replace('T', ' ')}: {run.get('reviewer_note') or '(no note)'}")
+
+    render_result(run, fb)
+    with st.expander("Stage-by-stage trace", icon=":material/timeline:"):
+        render_trace(run["stages"])
+
+
 def stage_grid():
     """Two-column grid of placeholders, filled row by row (1-2, 3-4, …)."""
     slots = []
@@ -408,6 +449,19 @@ elif page == "Dashboard":
         else:
             st.caption("No issues raised yet.")
 
+    if st.session_state.get("flash"):
+        st.toast(st.session_state.pop("flash"))
+    queue = sorted([r for r in runs if r["status"] == "pending_review"], key=lambda r: r["created_at"])
+    if queue:
+        q1, q2 = st.columns([3, 1], vertical_alignment="center")
+        q1.markdown(f'<div class="queuebar">🟠 <b>{len(queue)} invoice{"s" if len(queue) > 1 else ""} waiting for review.</b> '
+                    f'Each one arrives with the problem found and the next step suggested.</div>', unsafe_allow_html=True)
+        if q2.button("Review next", key="review_next", icon=":material/rate_review:", type="primary", width="stretch"):
+            review_dialog(queue[0]["id"])
+    else:
+        st.markdown('<div class="queuebar" style="background:#dcfce7;border-color:#86efac">✅ <b>Review queue is empty.</b></div>',
+                    unsafe_allow_html=True)
+
     st.markdown("##### Run history")
     f1, f2, f3 = st.columns([1.2, 1, 1])
     status_filter = f1.multiselect("Status", list(ui.STATUS_LABEL), format_func=lambda s: ui.STATUS_LABEL[s][0])
@@ -423,16 +477,21 @@ elif page == "Dashboard":
         "PO": r["po_number"], "Total": inr(r["total"], 2), "Status": label.get(r["status"], r["status"]),
         "Reason": r["headline"].split(" — ", 1)[-1], "Engine": r["extraction_method"], "id": r["id"]} for r in view])
     sel = st.dataframe(table.drop(columns=["id"]), hide_index=True, width="stretch",
-                       on_select="rerun", selection_mode="single-row",
+                       on_select="rerun", selection_mode="single-row", key=f"hist_{st.session_state.get('hist_ver', 0)}",
                        column_config={"Reason": st.column_config.TextColumn(width="large")})
-    st.caption("Click a row to open its full trace.")
+    st.caption("Click any row to open it in a review window.")
 
     pending = [r for r in runs if r["status"] == "pending_review"]
     chosen = None
     if sel and sel.selection.rows:
         chosen = view[sel.selection.rows[0]]
+        # open the window once per click (not again on every later interaction)
+        if st.session_state.get("dialog_for") != chosen["id"]:
+            st.session_state.dialog_for = chosen["id"]
+            review_dialog(chosen["id"])
+    else:
+        st.session_state.pop("dialog_for", None)
 
-    # ---- Outputs finance can use directly ----
     st.markdown("##### Exports")
     e1, e2, _ = st.columns([1, 1, 1.2])
     pay_rows = []
@@ -474,37 +533,6 @@ elif page == "Dashboard":
     st.dataframe(pd.DataFrame(ledger), hide_index=True, width="stretch", column_config={
         "Used": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1)})
     st.caption("Balances count invoices approved automatically or by a reviewer. Pending and rejected invoices don't consume the PO.")
-
-    if pending and not chosen:
-        st.info(f"{len(pending)} invoice(s) waiting for review. Select one in the table above to review it.", icon="🟠")
-
-    if chosen:
-        st.divider()
-        st.markdown(f"##### Run detail · {chosen['file_name']}  {ui.status_chip(chosen['status'])}",
-                    unsafe_allow_html=True)
-        con = db.connect()
-        fb = con.execute("SELECT file_bytes FROM runs WHERE id=?", (chosen["id"],)).fetchone()[0]
-        con.close()
-        a, b = st.columns([1.3, 1], gap="large")
-        with a:
-            render_result(chosen, fb)
-            if chosen["status"] == "pending_review":
-                st.markdown("###### Reviewer decision")
-                note = st.text_area("Note for the audit trail", placeholder="e.g. Price revision confirmed with procurement (email 12 Nov).")
-                r1, r2 = st.columns(2)
-                if r1.button("✓ Approve for payment", type="primary", width="stretch"):
-                    db.review_run(chosen["id"], True, note)
-                    st.toast("Approved — PO balance updated")
-                    st.rerun()
-                if r2.button("✕ Reject", width="stretch"):
-                    db.review_run(chosen["id"], False, note)
-                    st.toast("Rejected")
-                    st.rerun()
-            elif chosen.get("reviewer_note") or chosen.get("reviewed_at"):
-                st.caption(f"Reviewed {chosen['reviewed_at']}: {chosen.get('reviewer_note') or '(no note)'}")
-        with b:
-            st.markdown("###### Stage trace")
-            render_trace(chosen["stages"])
 
 # --------------------------------------------------------------------------- #
 # Page: Rules & data
